@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "eplus-prereview"
+version = "0.1.0"
+description = "Pre-submission review for EnergyPlus LEED / ASHRAE 90.1 Appendix G models: unmet-hours diagnosis, baseline/proposed consistency, simulation health."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "Proprietary (private preview)" }
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+prereview = "prereview.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+prereview = ["report/*.css"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
