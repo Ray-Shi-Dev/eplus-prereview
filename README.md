@@ -7,11 +7,12 @@ zones and objects involved, and what to change.
 
 It is built for the checks that cost modelers the most time:
 
-1. **Unmet load hours.** prereview counts the hours in which *any* zone is unmet, as 90.1 defines them, and
-   checks that count against the 300-hour and 50-hour rules. Then it explains where the hours come from, zone
-   by zone. It separates a coil that cannot hold its supply-air temperature from a VAV box stuck at maximum
-   airflow, a system that is switched off while people are in the building, morning recovery, equipment
-   hard-sized below its design size, and design days that do not match the climate.
+1. **Unmet load hours.** prereview measures the time in which *any* zone is unmet (the 90.1 definition, counted
+   at the zone timestep as EnergyPlus counts it) and checks it against the 300-hour limit of G3.1.2.3 for the
+   proposed and each baseline run. Then it explains where the hours come from, zone by zone. It separates a
+   coil or plant that cannot hold its supply temperature from a VAV box stuck at maximum airflow, a system that
+   is switched off while people are in the building, morning recovery, equipment hard-sized below its design
+   size, and design days that do not match the climate.
 2. **Baseline vs proposed items that must match.** It compares occupancy, plug and process loads, thermostat
    setpoints, HVAC operating hours, infiltration, lighting schedules, outdoor air, weather, run period and
    program version hour by hour, using the values EnergyPlus actually simulated.
@@ -19,14 +20,17 @@ It is built for the checks that cost modelers the most time:
    and warnings into groups and explains each group from a knowledge base: what the message means, whether
    it changes results, and how to fix it.
 4. **Baseline rules (90.1-2010, with 2016 differences).** Four orientations, window-to-wall ratio and its
-   distribution, skylights, the baseline HVAC system type, and LEED's 25% process-energy threshold.
+   distribution, skylights, the baseline HVAC system type (2010: by heating source; 2016: by climate zone), and
+   LEED's 25% process-energy threshold. When a rule depends on a fact the models cannot state for certain
+   (heating source, climate zone), prereview infers it, says so, and reports a mismatch as REVIEW; put the fact
+   in `project.toml` to make the check firm.
 
 ```
-FAIL   UMLH-300  Unmet load hours ≤ 300 [Proposed]: 1192.75 hours have at least one zone outside setpoint
-       while occupied (limit 300). Main contributor: PERIMETER_ZN_1 (cooling, 1186 h) — Capacity-limited,
-       and a component serving the zone is hard-sized below its design size. Coil:Cooling:DX:SingleSpeed
-       “PSZ-AC:2 HEAT PUMP DX COOLING COIL” Gross Rated Total Cooling Capacity is 3,432 W, 50% of its design
-       size (6,864).
+FAIL   UMLH-300  Unmet load hours ≤ 300 [Proposed]: 1,192.8 unmet load hours: time with at least one zone
+       outside setpoint while occupied (limit 300 for the proposed and each baseline). Main contributor:
+       PERIMETER_ZN_1 (cooling, 1186 h) — Capacity-limited, and a component serving the zone is hard-sized
+       below its design size. Coil:Cooling:DX:SingleSpeed “PSZ-AC:2 HEAT PUMP DX COOLING COIL” Gross Rated
+       Total Cooling Capacity is 3,432 W, 50% of its design size (6,864).
 FAIL   CONS-PLUG Receptacle loads the same: Electric equipment power (level × schedule) differs between
        proposed and baseline in 5 zones.
 ```
@@ -48,9 +52,10 @@ prereview check --proposed runs/proposed --baseline runs/b000 runs/b090 runs/b18
 ```toml
 name = "Office tower, Taipei"
 edition = "2010"                 # 90.1-2010 (LEED v4) or 2016 (LEED v4.1)
-building_type = "nonresidential" # nonresidential | residential | retail | heated_only_storage
+building_type = "nonresidential" # nonresidential | residential | retail | heated_only_storage | public_assembly | hospital
 floors_above_grade = 12
-heating_source = "fossil"        # fossil (incl. hybrid) | electric; inferred from the proposed model if omitted
+heating_source = "fossil"        # 2010: fossil (incl. hybrid, purchased heat) | electric; inferred if omitted
+climate_zone = "2A"              # 2016: ASHRAE 169 zone for Table G3.1.1-3; inferred from the weather if omitted
 rotation_exception = false       # true if the rating authority accepted a single orientation
 ```
 
@@ -59,27 +64,35 @@ The exit code is 1 when any finding is FAIL, so the tool can run in a script or 
 ### What `prereview run` adds to your model
 
 `prereview run` copies each IDF into the output folder and appends output requests. It never edits the
-building, HVAC, schedules or simulation settings. It adds:
+building, HVAC, schedules or simulation settings. HVACTemplate models are expanded first (ExpandObjects), so
+the outputs can name the real HVAC objects. It adds:
 
-- `Output:SQLite` (SimpleAndTabular) and the `AllSummary` reports, keeping any reports you already asked for.
+- `Output:SQLite` (SimpleAndTabular, SI units in the SQL even when your HTML tables are in IP) and the
+  `AllSummary` reports, keeping any reports you already asked for.
 - Hourly zone variables: unmet time, delivered heating and cooling, setpoints, temperature, occupancy, lights,
   equipment, VAV damper position, and outdoor dry-bulb and wet-bulb temperature.
 - Facility unmet time at the zone timestep, which gives the exact count of hours with any zone unmet.
 - `Schedule Value` for the schedules that loads, thermostats and HVAC availability refer to.
 - Node temperature and setpoint at each air loop's supply outlet and each plant loop's setpoint node.
 
-`prereview check` also works on runs that lack these outputs. When it uses less exact data, the report says
-so: for example, it judges unmet hours on EnergyPlus's heating + cooling total instead of the exact count.
+`prereview check` also works on runs that lack these outputs, and on tabular output in SI or IP units. When
+it uses less exact data, the report says so: for example, it judges unmet hours on EnergyPlus's heating +
+cooling total instead of the any-zone time. A folder must hold one run (eplusout.* or X.sql/X.err/X.idf); for
+a folder with several runs, pass each run's .sql file.
 
 ## How the unmet-hours check works
 
-EnergyPlus reports occupied heating and occupied cooling not-met time separately. The LEED summary table adds
-the two together. Under 90.1, an unmet load hour is any hour in which *one or more zones* is unmet. Adding
-heating and cooling together counts twice any hour in which one zone is short of heat while another is short of
-cooling. prereview rebuilds the exact count from EnergyPlus's facility-level timestep output. The heating and
-cooling totals it rebuilds match the tabular values exactly, and the report shows both figures. If the summed
-figure is over 300 but the exact count is not, the finding is REVIEW, not FAIL, so the modeler can report the
-exact figure with an explanation.
+90.1-2010 and 2016 (G3.1.2.3) limit unmet load hours to 300 for the proposed design and for each baseline
+run. The 50-hour proposed-minus-baseline rule was in 90.1-2007 (LEED 2009) only; prereview shows the
+difference for information.
+
+EnergyPlus reports occupied heating and occupied cooling not-met time separately, and the LEED summary table
+adds the two together, which counts twice any time in which one zone is short of heat while another is short of
+cooling. Under 90.1 an unmet load hour is one in which *one or more zones* is unmet. prereview rebuilds the
+any-zone figure from EnergyPlus's facility-level timestep output, time-weighted exactly as EnergyPlus counts
+(its heating and cooling totals match the tabular values). If the summed figure is over 300 but the any-zone
+figure is not, the finding is REVIEW, so the modeler can report the right figure with an explanation. The
+report also shows, for information, the stricter count of whole clock hours that contain any unmet timestep.
 
 For the zones that contribute most, the diagnosis uses hourly data to show why each zone is unmet:
 
@@ -120,15 +133,21 @@ python -I tools/faultlab/lab.py score LAB          # writes LAB/scorecard.md
 
 - prereview is a pre-submission aid, not a compliance certification. Clauses are paraphrased; your rating
   authority's interpretation decides.
-- The baseline HVAC check recognises Systems 1–10 from the HVAC topology report. It does not check fan power,
-  efficiencies, economizers or energy recovery yet. Special 90.1-2016 categories (public assembly, hospitals)
-  are flagged REVIEW for a manual check.
-- The window-to-wall check applies the 40% rule. The 90.1-2016 building-type table (G3.1.1-1) is reported as
-  REVIEW, not computed.
+- The baseline HVAC check recognises Systems 1–10 from the HVAC topology and the run's IDF (reheat and
+  heating coil types). It does not check fan power, efficiencies, economizers, energy recovery or boiler and
+  chiller counts yet. Special 90.1-2016 categories (public assembly, hospitals) are flagged REVIEW.
+- The window-to-wall check applies the 2010 rule (proposed or 40%, on conditioned walls when EnergyPlus reports
+  them). Under 2016 the building-type table (G3.1.1-1) is not computed: the total is reported as REVIEW with
+  both targets; the distribution by orientation is still checked.
+- The outdoor-air check compares zone design outdoor air and the air systems' minimum intake from
+  Controller:OutdoorAir; DOAS and zone-equipment outdoor air are not added up yet.
 - The schedule checks compare what EnergyPlus simulated, hour by hour. They cannot tell an approved
   exceptional calculation from a mistake, so they report the difference and leave the judgment to you.
-- HVACTemplate models are expanded by EnergyPlus (`-x`). Their HVAC operation schedules are traced only when
-  the expanded objects are present.
+- Models with GroundHeatTransfer objects are run with EnergyPlus's own `-x` expansion; their HVAC outputs are
+  requested by wildcard only.
+- The rules encode the author's reading of 90.1, checked by an independent review; the fault lab tests that the
+  code does what that reading says, so it cannot catch a misread clause. Please report any rule you disagree
+  with.
 - The LEED process-energy check uses site energy as a proxy for energy cost.
 
 ## Layout

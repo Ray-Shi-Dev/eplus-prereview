@@ -175,7 +175,7 @@ def cold_faults() -> List[Fault]:
               [Expect("UMLH-300", "FAIL", P, zone="FRONT_RETAIL", cause="never_delivers")]),
         Fault("C03", "OS", P, "Heating sized on a +2 °C design day instead of the 99.6% condition",
               lambda m, x: _mild_heating_design_day(m),
-              [Expect("UMLH-300", "*", P, cause="beyond_design_day"), Expect("UMLH-50", "FAIL")]),
+              [Expect("UMLH-300", "*", P, cause="beyond_design_day"), Expect("SIZE-DD", "FAIL", P)]),
         Fault("C04", "OS", P, "10 °C night setback with no night cycling (morning warm-up)",
               lambda m, x: M.set_field_all(_replace_schedule(m, "HTGSETP_SCH_NO_OPTIMUM", "Temperature",
                                                              HTG_SETBACK_10), "AvailabilityManager:NightCycle", 3,
@@ -216,8 +216,7 @@ def faults() -> List[Fault]:
         # -- unmet load hours
         Fault("F07", "OS", P, "Cooling coil hard-sized at 50% of design (Perimeter_ZN_1)",
               lambda m, x: _set_cooling_capacity(m, OS_COIL2, 0.5 * _design_size(x, OS_COIL2, cap)),
-              [Expect("UMLH-300", "FAIL", P, zone="PERIMETER_ZN_1", cause="hard_sized_below_design"),
-               Expect("UMLH-50", "FAIL")]),
+              [Expect("UMLH-300", "FAIL", P, zone="PERIMETER_ZN_1", cause="hard_sized_below_design")]),
         Fault("F08", "OS", P, "Cooling coil never available (Perimeter_ZN_2)",
               lambda m, x: M.set_field(_always_off(m), "Coil:Cooling:DX:SingleSpeed",
                                        "PSZ-AC:3 Heat Pump DX Cooling Coil", 1, "LAB_ALWAYS_OFF"),
@@ -242,9 +241,9 @@ def faults() -> List[Fault]:
               "(Perimeter_bot_ZN_1)",
               lambda m, x: M.set_field(m, "Sizing:Zone", "Perimeter_bot_ZN_1", 2, "6.0"),
               [Expect("UMLH-300", "FAIL", P, zone="PERIMETER_BOT_ZN_1", cause="terminal_at_max_airflow")]),
-        Fault("F12", "OS", P, "Proposed coil at 90% (Core_ZN): within 300 but > baseline + 50",
+        Fault("F12", "OS", P, "Compliant: proposed 166 h vs baselines ~70 h (no 50-hour rule since 90.1-2010)",
               lambda m, x: _set_cooling_capacity(m, OS_COIL1, 0.9 * _design_size(x, OS_COIL1, cap)),
-              [Expect("UMLH-50", "FAIL"), Expect("UMLH-300", "PASS", P)]),
+              [Expect("UMLH-300", "PASS", P), Expect("UMLH-DIFF", "INFO")]),
         Fault("F13", "OS", B0, "Baseline coil hard-sized at 50% (Perimeter_ZN_1)",
               lambda m, x: _set_cooling_capacity(m, OS_COIL2, 0.5 * _design_size(x, OS_COIL2, cap)),
               [Expect("UMLH-300", "FAIL", B0, zone="PERIMETER_ZN_1", cause="hard_sized_below_design")]),
@@ -268,7 +267,7 @@ def faults() -> List[Fault]:
               [Expect("CONS-TSTAT-HTG", "FAIL")]),
         Fault("F20", "OS", B0, "Baseline infiltration +50%",
               lambda m, x: M.scale_level(m, "ZoneInfiltration:DesignFlowRate", 1.5),
-              [Expect("CONS-INFIL", "FAIL")]),
+              [Expect("CONS-INFIL", "REVIEW")]),
         Fault("F21", "OS", B0, "Baseline lighting schedule changed",
               lambda m, x: _replace_schedule(m, "BLDG_LIGHT_SCH", "Fraction", LIGHT_ALT),
               [Expect("CONS-LSCHED", "REVIEW")]),
@@ -297,8 +296,22 @@ def faults() -> List[Fault]:
               [Expect("BASE-SYSTEM", "FAIL")], project={"heating_source": "fossil"}),
         Fault("F31", "RS", "none", "Furnace baseline for an electrically heated building", None,
               [Expect("BASE-SYSTEM", "FAIL")], project={"heating_source": "electric"}),
+        # -- cases taken from the standard's text (independent review): 90.1-2016 differences
+        Fault("F35", "RS", "none", "90.1-2016, climate zone 2A: furnace baseline where Table G3.1.1-3 needs a heat "
+              "pump (System 4)", None, [Expect("BASE-SYSTEM", "FAIL")],
+              project={"edition": "2016", "climate_zone": "2A", "building_type": "retail"}),
+        Fault("F36", "OS", "none", "90.1-2016: baseline at the proposed WWR — Table G3.1.1-1 may require another "
+              "value (offices 5,000–50,000 ft²: 31%)", None, [Expect("BASE-WWR-2016", "REVIEW")],
+              project={"edition": "2016", "climate_zone": "2A"}),
     ]
 
+
+# Findings on the clean sets that are TRUE (the DOE prototypes are not Appendix G baselines); they are
+# reported in the scorecard but not counted as false alarms.
+KNOWN_TRUE = {
+    "OM": {"BASE-SYSTEM": "The prototype's packaged VAV uses electric reheat; System 5 requires hot-water reheat "
+                          "from a fossil boiler, so the clean baseline is genuinely not System 5."},
+}
 
 CLEAN_PROJECT = {
     "OS": {"heating_source": "electric", "building_type": "nonresidential", "floors_above_grade": 1},

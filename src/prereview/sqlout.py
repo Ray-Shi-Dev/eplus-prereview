@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+from array import array
 from pathlib import Path
 from collections import defaultdict
 from dataclasses import dataclass
@@ -26,6 +27,34 @@ def to_float(value) -> Optional[float]:
     if _NUM.match(s):
         return float(s)
     return None
+
+
+# Tabular reports can be in SI or IP (OutputControl:Table:Style). Factors to SI (offset for °F).
+_TO_SI = {
+    "m2": ("m2", 1.0), "ft2": ("m2", 0.09290304),
+    "gj": ("GJ", 1.0), "mj": ("GJ", 1e-3), "kj": ("GJ", 1e-6), "j": ("GJ", 1e-9), "kwh": ("GJ", 0.0036),
+    "mwh": ("GJ", 3.6), "kbtu": ("GJ", 0.001055056), "mbtu": ("GJ", 1.055056), "btu": ("GJ", 1.055056e-6),
+    "therm": ("GJ", 0.1055056), "mmbtu": ("GJ", 1.055056),
+    "w": ("W", 1.0), "kw": ("W", 1000.0), "btu/h": ("W", 0.29307107), "kbtu/h": ("W", 293.07107),
+    "m3/s": ("m3/s", 1.0), "l/s": ("m3/s", 0.001), "ft3/min": ("m3/s", 0.000471947443),
+    "c": ("C", 1.0), "f": ("C", None),
+}
+
+
+def to_si(value: Optional[float], units: str) -> Tuple[Optional[float], Optional[str]]:
+    """Convert a tabular value to SI. Returns (value, SI unit) or (None, None) for unknown units."""
+    if value is None:
+        return None, None
+    u = (units or "").strip().lower().replace("°", "").replace(" ", "")
+    if u in ("", "hr", "%"):
+        return value, units
+    conv = _TO_SI.get(u)
+    if conv is None:
+        return None, None
+    si, factor = conv
+    if factor is None:  # °F
+        return (value - 32.0) / 1.8, si
+    return value * factor, si
 
 
 @dataclass
@@ -126,6 +155,22 @@ class SqlResults:
 
     def tab_float(self, report: str, table: str, row: str, col: str) -> Optional[float]:
         return to_float(self.tab_value(report, table, row, col))
+
+    def tab_units(self, report: str, table: str, row: str, col: str) -> str:
+        t = self.tabular(report, table)
+        for rk, cols in t.items():
+            if rk.strip().upper() == row.strip().upper():
+                for ck, (_, units) in cols.items():
+                    if ck.strip().upper() == col.strip().upper():
+                        return units or ""
+        return ""
+
+    def tab_si(self, report: str, table: str, row: str, col: str, expect: str) -> Optional[float]:
+        """A tabular number converted to SI; None when missing or in an unexpected unit."""
+        v, si = to_si(self.tab_float(report, table, row, col), self.tab_units(report, table, row, col))
+        if v is None or (si not in (expect, "") and si is not None and si.lower() != expect.lower()):
+            return None
+        return v
 
     def general(self) -> Dict[str, str]:
         t = self.tabular("InputVerificationandResultsSummary", "General")
@@ -263,7 +308,8 @@ class SqlResults:
         order = self._run_period_time_index(0 if frequency.lower() in ("zone timestep", "timestep") else 1)
         pos = {t: i for i, t in enumerate(order)}
         names = {di: k for di, k in dicts}
-        out: Dict[str, List[float]] = {k: [0.0] * len(order) for k in names.values()}
+        # array('d') holds 8 bytes per value instead of ~32 for a list of floats
+        out: Dict[str, List[float]] = {k: array("d", bytes(8 * len(order))) for k in names.values()}  # type: ignore
         marks = ",".join("?" * len(names))
         for di, t, v in self.q(
                 f"select ReportDataDictionaryIndex, TimeIndex, Value from ReportData "
@@ -273,6 +319,11 @@ class SqlResults:
                 out[names[di]][p] = v
         self._cache[ck] = out
         return out
+
+    def forget(self, name: str) -> None:
+        """Drop cached series of one variable (rules call this when done with it, to bound memory)."""
+        for k in [k for k in self._cache if k.startswith(f"series|{name}|")]:
+            del self._cache[k]
 
     def hourly(self, name: str, key: Optional[str] = None) -> Dict[str, List[float]]:
         """{key: values for each run-period hour} for an hourly report variable."""

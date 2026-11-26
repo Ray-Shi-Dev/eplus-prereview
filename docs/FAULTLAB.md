@@ -30,6 +30,29 @@ Two fault sets:
 Some faults are mild on purpose: the building stays under 300 h. For those, the test is whether the
 diagnosis names the right cause, and the expected status is "any".
 
+## What the lab can and cannot prove
+
+The lab checks that the code does what its rules say. It cannot show that a rule reads the standard
+correctly, because the expected answers come from the same reading. An independent review compared the rules
+with the standard's text and interpretations, and found several errors that the lab had passed. They are
+now fixed, and the lab has cases taken from that text:
+
+- **The 50-hour rule.** The proposed-minus-baseline limit was in 90.1-2007 (LEED 2009) only;
+  90.1-2010 G3.1.2.3 limits each model to 300 h. F12, a compliant model, used to FAIL. It is now a
+  no-false-alarm case.
+- **90.1-2016 picks the baseline system by climate zone, not fuel** (Table G3.1.1-3). F35 is a Taipei
+  (zone 2A) retail building whose baseline must be System 4.
+- **90.1-2016 fixes the WWR of listed building types** (Table G3.1.1-1). F36 checks that prereview does not
+  FAIL such a baseline.
+- **Other corrections.** IP-unit tabular output is converted. HVACTemplate models are expanded before
+  outputs are added, and they run safely in parallel. Run files are paired by name. A heating source or
+  climate zone that prereview inferred never produces a FAIL on its own. Unknown frequent warnings are no
+  longer called harmless.
+
+The clean DOE prototypes are not Appendix G baselines. When prereview flags something that is genuinely
+wrong in them, for example the medium office's packaged VAV with electric reheat, which is not System 5, the
+scorecard lists it as a true finding and does not count it as a false alarm.
+
 ## Reproduce
 
 ```bash

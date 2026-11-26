@@ -49,13 +49,14 @@ def project_from(path: Optional[str], args: argparse.Namespace) -> ProjectInfo:
         building_type=d.get("building_type"),
         floors_above_grade=d.get("floors_above_grade"),
         heating_source=d.get("heating_source"),
+        climate_zone=str(d["climate_zone"]) if d.get("climate_zone") is not None else None,
         rotation_exception=bool(d.get("rotation_exception", False)),
     )
     if getattr(args, "edition", None):
         pj.edition = args.edition
     if getattr(args, "name", None):
         pj.name = args.name
-    for key in ("building_type", "floors_above_grade", "heating_source"):
+    for key in ("building_type", "floors_above_grade", "heating_source", "climate_zone"):
         v = getattr(args, key, None)
         if v is not None:
             setattr(pj, key, v)
@@ -66,11 +67,15 @@ def project_from(path: Optional[str], args: argparse.Namespace) -> ProjectInfo:
 
 def review(proposed: str, baselines: List[str], project: ProjectInfo, out_html: Optional[str],
            out_json: Optional[str], labels: Optional[List[str]] = None) -> int:
-    p = ModelRun.load(proposed, "proposed", "Proposed")
-    bl = []
-    for i, b in enumerate(baselines):
-        label = labels[i] if labels and i < len(labels) else None
-        bl.append(ModelRun.load(b, "baseline", label or f"Baseline {i + 1}"))
+    try:
+        p = ModelRun.load(proposed, "proposed", "Proposed")
+        bl = []
+        for i, b in enumerate(baselines):
+            label = labels[i] if labels and i < len(labels) else None
+            bl.append(ModelRun.load(b, "baseline", label or f"Baseline {i + 1}"))
+    except ValueError as exc:
+        print(f"prereview: {exc}", file=sys.stderr)
+        return 2
     # label baselines by rotation when possible
     for b in bl:
         if not (labels and b.label in labels) and b.sql is not None:
@@ -146,7 +151,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         p.add_argument("--edition", choices=["2010", "2016"], help="ASHRAE 90.1 edition (default 2010 = LEED v4)")
         p.add_argument("--name", help="project name for the report")
         p.add_argument("--building-type", dest="building_type",
-                       choices=["nonresidential", "residential", "heated_only_storage", "retail"])
+                       choices=["nonresidential", "residential", "heated_only_storage", "retail", "public_assembly",
+                                "hospital"])
+        p.add_argument("--climate-zone", dest="climate_zone",
+                       help="ASHRAE 169 climate zone, e.g. 2A (90.1-2016 baseline system type)")
         p.add_argument("--floors", dest="floors_above_grade", type=int, help="floors above grade")
         p.add_argument("--heating", dest="heating_source", choices=["fossil", "electric"])
         p.add_argument("--html", help="write the HTML report here")

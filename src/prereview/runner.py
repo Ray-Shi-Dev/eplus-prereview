@@ -183,7 +183,8 @@ def inject_outputs(idf: Idf, variables: Optional[List[str]] = None) -> Idf:
         return [format_object("Output:Variable", [key, name, freq])]
 
     additions = [
-        format_object("Output:SQLite", ["SimpleAndTabular"]),
+        # JtoGJ: SI tabular data in the SQL file even when the HTML tables are in IP units
+        format_object("Output:SQLite", ["SimpleAndTabular", "JtoGJ"]),
         format_object("Output:Table:SummaryReports", wanted),
     ]
     for name in variables:
@@ -207,6 +208,30 @@ def needs_expand_objects(idf: Idf) -> bool:
     return idf.has_class_prefix("HVACTemplate:") or idf.has_class_prefix("GroundHeatTransfer:")
 
 
+def expand_templates(model: Idf, exe: str, work_dir: str) -> Optional[Idf]:
+    """Run ExpandObjects on a model with HVACTemplate objects so prereview can add outputs for the real
+    HVAC objects (nodes, availability schedules). Returns the expanded model, or None if not possible."""
+    install = os.path.dirname(os.path.realpath(exe))
+    expander = os.path.join(install, "ExpandObjects.exe" if os.name == "nt" else "ExpandObjects")
+    idd = os.path.join(install, "Energy+.idd")
+    if not (os.path.isfile(expander) and os.path.isfile(idd)):
+        return None
+    os.makedirs(work_dir, exist_ok=True)
+    model.write(os.path.join(work_dir, "in.idf"))
+    shutil.copyfile(idd, os.path.join(work_dir, "Energy+.idd"))
+    try:
+        proc = subprocess.run([expander], cwd=work_dir, capture_output=True, text=True, timeout=900)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    out = os.path.join(work_dir, "expanded.idf")
+    if proc.returncode != 0 or not os.path.isfile(out):
+        return None
+    expanded = Idf.from_file(out)
+    if expanded.has_class_prefix("HVACTemplate:"):
+        return None
+    return expanded
+
+
 def run_model(
     idf_path: str,
     epw_path: str,
@@ -228,8 +253,15 @@ def run_model(
                 f"{exe_v}. Run with a matching version (--energyplus) or transition the file "
                 "with IDFVersionUpdater first."
             )
+    out_dir = os.path.abspath(out_dir)
+    epw_path = os.path.abspath(epw_path)
     os.makedirs(out_dir, exist_ok=True)
-    model = inject_outputs(idf) if inject else idf
+    model = idf
+    if inject and idf.has_class_prefix("HVACTemplate:") and not idf.has_class_prefix("GroundHeatTransfer:"):
+        expanded = expand_templates(idf, exe, os.path.join(out_dir, "expand"))
+        if expanded is not None:
+            model = expanded
+    model = inject_outputs(model) if inject else model
     run_idf = os.path.join(out_dir, "in.idf")
     model.write(run_idf)
     args = [exe, "-w", epw_path, "-d", out_dir]
@@ -237,8 +269,10 @@ def run_model(
         args.append("-x")
     args.append(run_idf)
     t0 = time.time()
+    # cwd=out_dir: with -x EnergyPlus writes helper files into the working directory, so parallel runs
+    # sharing one directory would collide
     with open(os.path.join(out_dir, "prereview_run.log"), "w") as log:
-        proc = subprocess.run(args, stdout=log, stderr=subprocess.STDOUT, timeout=timeout_s)
+        proc = subprocess.run(args, stdout=log, stderr=subprocess.STDOUT, timeout=timeout_s, cwd=out_dir)
     elapsed = time.time() - t0
     sql = os.path.join(out_dir, "eplusout.sql")
     err = os.path.join(out_dir, "eplusout.err")

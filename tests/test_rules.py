@@ -74,16 +74,18 @@ def test_without_timestep_output_uses_reported_values(tmp_path):
     assert status(unmet.check(ctx(m3, [])), "UMLH-300", "c").status == "PASS"
 
 
-@pytest.mark.parametrize("prop,bases,expected", [
-    (200, [140, 150, 160, 170], "REVIEW"),   # +45 vs the average, +60 vs one rotation
-    (260, [140, 150, 160, 170], "FAIL"),     # +105 vs the average
-    (150, [140, 150, 160, 170], "PASS"),
-    (100, [250, 260, 270, 280], "PASS"),     # baseline higher than proposed is allowed
-])
-def test_fifty_hour_rule(tmp_path, prop, bases, expected):
+@pytest.mark.parametrize("edition", ["2010", "2016"])
+@pytest.mark.parametrize("prop,bases", [(200, [140, 150, 160, 170]), (260, [140, 150, 160, 170]),
+                                        (100, [250, 260, 270, 280])])
+def test_no_fifty_hour_rule_after_2007(tmp_path, edition, prop, bases):
+    """90.1-2010/2016 G3.1.2.3 limits each model to 300 h; the 50-hour differential was 90.1-2007 only.
+    A proposed model at 260 h against baselines at 140-170 h complies."""
     p = make_run(str(tmp_path), "p", 0, prop)
     bl = [make_run(str(tmp_path), f"b{i}", 0, v) for i, v in enumerate(bases)]
-    assert status(unmet.check(ctx(p, bl)), "UMLH-50").status == expected
+    out = unmet.check(ctx(p, bl, edition=edition))
+    assert status(out, "UMLH-DIFF").status == "INFO"
+    assert not [f for f in out if f.status == "FAIL"]
+    assert "G3.1.2.3" in status(out, "UMLH-300", "p").clause
 
 
 def test_people_mismatch_fails_and_names_zone(tmp_path):
@@ -192,3 +194,87 @@ def test_plant_traversal_follows_heat_exchangers(tmp_path):
     assert [e["name"] for e in equipment] == ["HX", "CH1"]
     loops, equipment = plants_serving(sql, {"R1"})
     assert loops == ["HW"] and [e["name"] for e in equipment] == ["B1"]
+
+
+def test_ip_units_are_converted(tmp_path):
+    """OutputControl:Table:Style InchPound puts ft2, °F and kBtu in the tabular data."""
+    folder = tmp_path / "ip"
+    folder.mkdir()
+    s = SynthSql(str(folder / "eplusout.sql"), hours=2)
+    s.general()
+    s.tab(ABUPS, "Building Area", "Net Conditioned Building Area", "Area", "10000.00", "ft2")
+    s.tab(ABUPS, "End Uses", "Interior Equipment", "Electricity", "1000.00", "kBtu")
+    s.tab(ABUPS, "End Uses", "Interior Equipment", "Natural Gas", "100.00", "kBtu")
+    s.tab(ABUPS, "End Uses", "Interior Equipment", "Water", "5.00", "gal")
+    s.tab("ClimaticDataSummary", "SizingPeriod:DesignDay", "X ANN CLG 1% CONDNS DB=>MWB", "Maximum Dry Bulb", "95.00", "F")
+    s.tab("ClimaticDataSummary", "SizingPeriod:DesignDay", "X ANN CLG 1% CONDNS DB=>MWB", "Humidity Type",
+          "Wetbulb [F]", "")
+    s.tab("ClimaticDataSummary", "SizingPeriod:DesignDay", "X ANN CLG 1% CONDNS DB=>MWB", "Humidity Value", "75.00", "")
+    s.close()
+    write(str(folder / "eplusout.err"), err_text([]))
+    m = ModelRun.load(str(folder), "proposed", "ip")
+    assert abs(m.conditioned_area() - 929.0304) < 0.01
+    eq = m.end_uses_gj()["INTERIOR EQUIPMENT"]
+    assert abs(sum(eq.values()) - 1.1 * 1.055056) < 1e-6
+    dd = unmet._design_days(m)[0]
+    assert abs(dd["max_db"] - 35.0) < 1e-6 and abs(dd["humidity"] - 23.8889) < 1e-3
+
+
+def test_2016_system_type_follows_climate_zone(tmp_path):
+    from prereview.rules import baseline2010
+    p = make_run(str(tmp_path), "p", 0, 0)
+    for cz, warm in (("2A", True), ("1A", True), ("3A", True), ("3B", False), ("4C", False), ("5A", False)):
+        c = ctx(p, [], edition="2016", climate_zone=cz)
+        col, basis, firm = baseline2010._climate_zone(c)
+        assert firm and col == ("warm" if warm else "cold"), cz
+    c = ctx(p, [], edition="2016", climate_zone="3")
+    assert baseline2010._climate_zone(c)[0] is None
+
+
+def test_heating_source_inferred_from_equipment(tmp_path):
+    from prereview.idf import Idf
+    from prereview.rules import baseline2010
+    p = make_run(str(tmp_path), "p", 0, 0)
+    p.idf = Idf("Coil:Heating:Fuel, Furnace 1, Always On, NaturalGas, 0.8, autosize;\n"
+                "Coil:Heating:Electric, Reheat 1, Always On, 1.0, autosize;")
+    src, basis, firm = baseline2010._heating_source(ctx(p, []))
+    assert src == "fossil" and not firm and "hybrid" in basis
+    p.idf = Idf("Boiler:HotWater, B1, Electricity, autosize, 1.0;")
+    assert baseline2010._heating_source(ctx(p, []))[0] == "electric"
+    assert baseline2010._heating_source(ctx(p, [], heating_source="fossil"))[:3:2] == ("fossil", True)
+
+
+@pytest.mark.parametrize("types,terms,reheats,nz,expected", [
+    (["Coil:Cooling:DX:TwoSpeed", "Coil:Heating:Fuel"], ["AirTerminal:SingleDuct:VAV:Reheat"], ["WATER"], 5, 5),
+    (["Coil:Cooling:DX:TwoSpeed", "Coil:Heating:Fuel"], ["AirTerminal:SingleDuct:VAV:Reheat"], ["ELECTRIC"], 5, None),
+    (["Coil:Cooling:Water", "Coil:Heating:Water"], ["AirTerminal:SingleDuct:VAV:Reheat"], ["WATER"], 8, 7),
+    (["Coil:Cooling:Water"], ["AirTerminal:SingleDuct:ParallelPIU:Reheat"], ["ELECTRIC"], 8, 8),
+    (["Coil:Cooling:DX:SingleSpeed", "Coil:Heating:DX:SingleSpeed"], ["AirTerminal:SingleDuct:Uncontrolled"],
+     [None], 1, 4),
+    (["Coil:Cooling:DX:SingleSpeed", "Coil:Heating:Fuel"], ["AirTerminal:SingleDuct:ConstantVolume:NoReheat"],
+     ["NONE", "NONE"], 2, None),
+])
+def test_system_classifier(types, terms, reheats, nz, expected):
+    from prereview.rules import baseline2010
+    assert baseline2010._classify_loop(types, terms, reheats, nz)[0] == expected
+
+
+def test_files_are_paired_by_name(tmp_path):
+    from prereview.rules import health
+    folder = tmp_path / "shared"
+    folder.mkdir()
+    for stem in ("Proposed", "Baseline_0"):
+        s = SynthSql(str(folder / f"{stem}.sql"), hours=2)
+        s.general()
+        s.close()
+    write(str(folder / "Proposed.err"), err_text([]))
+    write(str(folder / "Baseline_0.idf"), "Version, 26.2;")
+    with pytest.raises(ValueError):
+        ModelRun.load(str(folder), "proposed")
+    m = ModelRun.load(str(folder / "Proposed.sql"), "proposed")
+    assert m.err is not None and m.idf is None  # Baseline_0.idf is not picked up for Proposed
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    e = ModelRun.load(str(empty), "proposed")
+    f = [x for x in health.check_model(e) if x.rule_id == "HEALTH-RUN"][0]
+    assert f.status == "FAIL" and "No EnergyPlus results" in f.message

@@ -35,15 +35,15 @@ VAR_FAC_H = "Facility Heating Setpoint Not Met While Occupied Time"
 VAR_FAC_C = "Facility Cooling Setpoint Not Met While Occupied Time"
 
 LIMIT = 300.0
-DIFF_LIMIT = 50.0
+OLD_DIFF_LIMIT = 50.0  # 90.1-2007 / LEED 2009 only; removed by addendum cr (folded into 90.1-2010)
 
-SOURCE_TEXT = ("“Unmet load hours for the proposed design or baseline building designs shall not exceed "
-               "300 (of the 8760 hours simulated), and unmet load hours for the proposed design shall not "
-               "exceed the number of unmet load hours for the baseline building design by more than 50.” "
-               "(text quoted in ASHRAE interpretation IC 90.1-2007-03)")
+SOURCE_TEXT = ("90.1-2010 and 2016 G3.1.2.3 Unmet Loads (paraphrased): unmet load hours of the proposed design and "
+               "of each baseline design must not exceed 300 of the 8,760 hours simulated; the rating authority may "
+               "accept more when the modeler shows the accuracy of the simulation is not significantly affected. "
+               "Definition (Section 3): an hour in which one or more zones is outside its thermostat setpoint.")
 CLAUSES = {
-    "2010": "ASHRAE 90.1-2010 Appendix G — equipment capacities / unmet load hours (G3.1.2.2)",
-    "2016": "ASHRAE 90.1-2016 Appendix G — unmet load hours (G3.1.2.3)",
+    "2010": "ASHRAE 90.1-2010 G3.1.2.3 Unmet Loads — 300 hours for the proposed and each baseline",
+    "2016": "ASHRAE 90.1-2016 G3.1.2.3 Unmet Loads — 300 hours for the proposed and each baseline",
 }
 
 # Root-cause categories, in the order they are preferred as the "primary" explanation.
@@ -170,6 +170,7 @@ class UnmetStats:
     hourly: bool
     diagnosis: List[ZoneModeDiagnosis] = field(default_factory=list)
     union_matches_reported: Optional[bool] = None
+    clock_hours: Optional[int] = None  # clock hours that contain any unmet timestep (strict reading)
 
     @property
     def reported_sum(self) -> Optional[float]:
@@ -212,15 +213,18 @@ def _zone_hours_tabular(model: ModelRun) -> List[Tuple[str, float, float]]:
 
 
 def _design_days(model: ModelRun) -> List[Dict[str, object]]:
+    """Design days with temperatures in °C (tabular output may be in °F)."""
+    from ..sqlout import to_si
     t = model.sql.tabular("ClimaticDataSummary", "SizingPeriod:DesignDay")
     out = []
     for name, cols in t.items():
-        out.append({
-            "name": name.strip(),
-            "max_db": to_float(cols.get("Maximum Dry Bulb", ("", ""))[0]),
-            "humidity": to_float(cols.get("Humidity Value", ("", ""))[0]),
-            "humidity_type": cols.get("Humidity Type", ("", ""))[0],
-        })
+        db_val, db_units = cols.get("Maximum Dry Bulb", ("", ""))
+        max_db, _ = to_si(to_float(db_val), db_units or "C")
+        htype = cols.get("Humidity Type", ("", ""))[0]
+        hum = to_float(cols.get("Humidity Value", ("", ""))[0])
+        if hum is not None and "[F]" in htype.upper():
+            hum = (hum - 32.0) / 1.8
+        out.append({"name": name.strip(), "max_db": max_db, "humidity": hum, "humidity_type": htype})
     return out
 
 
@@ -280,7 +284,7 @@ def _hard_sizing_for_zone(model: ModelRun, zone: str, mode: str, services, loops
     by_comp: Dict[Tuple[str, str], Dict[str, Tuple[float, str]]] = defaultdict(dict)
     for row in model.sql.component_sizes():
         cname = (row["name"] or "").upper()
-        if cname in names or (zone_u and zone_u in cname):
+        if cname in names or (zone_u and re.search(r"(^|[^A-Z0-9])" + re.escape(zone_u) + r"([^A-Z0-9]|$)", cname)):
             by_comp[(row["type"], row["name"])][row["desc"]] = (row["value"], row["units"])
     found = []
     single_zone = svc is not None and all(n_zones.get(loop.upper(), 0) <= 1 for loop in svc.air_loops)
@@ -342,9 +346,12 @@ def _first_occupied_hours(occ: List[float], stamps: List[Tuple]) -> set:
     return first
 
 
-def facility_union(model: ModelRun) -> Optional[Tuple[float, float, float]]:
-    """(any-zone heating h, any-zone cooling h, any-zone heating-or-cooling h), occupied, from the
-    facility zone-timestep series. None when the series were not reported."""
+def facility_union(model: ModelRun) -> Optional[Tuple[float, float, float, Optional[int]]]:
+    """(any-zone heating h, any-zone cooling h, any-zone heating-or-cooling h, clock hours with any unmet
+    timestep), occupied, from the facility zone-timestep series. None when the series were not reported.
+
+    The first three are time-weighted exactly as EnergyPlus reports them; the clock-hour count is the
+    strict reading of "an hour in which one or more zones is unmet" and is shown for information."""
     s = model.sql
     fh = s.series(VAR_FAC_H, frequency="Zone Timestep")
     fc = s.series(VAR_FAC_C, frequency="Zone Timestep")
@@ -352,7 +359,13 @@ def facility_union(model: ModelRun) -> Optional[Tuple[float, float, float]]:
         return None
     h = next(iter(fh.values()))
     c = next(iter(fc.values()))
-    return sum(h), sum(c), sum(max(a, b) for a, b in zip(h, c))
+    union = [max(a, b) for a, b in zip(h, c)]
+    hours = len(s.time_stamps())
+    clock = None
+    if hours and len(union) % hours == 0:
+        tph = len(union) // hours
+        clock = sum(1 for k in range(hours) if any(x > 1e-9 for x in union[k * tph:(k + 1) * tph]))
+    return sum(h), sum(c), sum(union), clock
 
 
 def compute(model: ModelRun, diagnose: bool = True, top_n: int = 6) -> UnmetStats:
@@ -364,12 +377,16 @@ def compute(model: ModelRun, diagnose: bool = True, top_n: int = 6) -> UnmetStat
     if fu is None:
         stats = UnmetStats(rh, rc, leed, None, None, None, zone_tab, hourly)
     else:
-        uh, uc, uu = fu
+        uh, uc, uu, clock = fu
         stats = UnmetStats(rh, rc, leed, round(uu, 2), round(uh, 2), round(uc, 2), zone_tab, hourly)
+        stats.clock_hours = clock
         if rh is not None and rc is not None:
             stats.union_matches_reported = abs(uh - rh) <= 0.1 and abs(uc - rc) <= 0.1
     if diagnose and hourly and (stats.judged or 0) > 0:
         stats.diagnosis = _diagnose(model, stats, top_n)
+    for var in (VAR_H, VAR_C, VAR_QH, VAR_QC, VAR_T, VAR_SPH, VAR_SPC, VAR_DAMPER, VAR_NODE_T, VAR_NODE_SP,
+                VAR_FAC_H, VAR_FAC_C, VAR_OWB):
+        s.forget(var)
     return stats
 
 
@@ -626,10 +643,17 @@ def _model_finding(model: ModelRun, stats: UnmetStats, edition: str) -> Finding:
     evidence = [
         {"Metric": "Occupied heating not met (EnergyPlus, facility)", "Hours": _fmt(stats.reported_heating)},
         {"Metric": "Occupied cooling not met (EnergyPlus, facility)", "Hours": _fmt(stats.reported_cooling)},
-        {"Metric": "LEED summary ‘Number of hours not met’ (heating + cooling)", "Hours": _fmt(stats.reported_leed)},
-        {"Metric": "Hours with any zone unmet (90.1 definition)",
-         "Hours": _fmt(stats.union_hours) if stats.union_hours is not None else "needs hourly output"},
+        {"Metric": "LEED summary ‘Number of hours not met’ (heating + cooling, counts overlaps twice)",
+         "Hours": _fmt(stats.reported_leed)},
+        {"Metric": "Time with any zone unmet, heating or cooling (EnergyPlus timestep method) — judged",
+         "Hours": _fmt(stats.union_hours) if stats.union_hours is not None else "needs timestep output"},
     ]
+    if stats.clock_hours is not None:
+        evidence.append({"Metric": "Whole clock hours containing any unmet timestep (strict reading, for "
+                                   "information)", "Hours": _fmt(float(stats.clock_hours))})
+    if stats.union_matches_reported is not None:
+        evidence.append({"Metric": "Rebuilt heating and cooling totals match EnergyPlus's tables",
+                         "Hours": "yes" if stats.union_matches_reported else "NO — check the timestep output"})
     j = stats.judged
     if j is None:
         return Finding("UMLH-300", "Unmet load hours ≤ 300", SKIPPED,
@@ -640,16 +664,18 @@ def _model_finding(model: ModelRun, stats: UnmetStats, edition: str) -> Finding:
     if stats.union_hours is not None:
         if stats.union_hours > LIMIT:
             status = FAIL
-            msg = (f"{_fmt(stats.union_hours)} hours have at least one zone outside setpoint while occupied "
-                   f"(limit 300).")
+            msg = (f"{_fmt(stats.union_hours)} unmet load hours: time with at least one zone outside setpoint "
+                   f"while occupied (limit 300 for the proposed and each baseline).")
         elif rs is not None and rs > LIMIT:
             status = REVIEW
-            msg = (f"The exact count is {_fmt(stats.union_hours)} h (within 300), but EnergyPlus's heating + cooling "
-                   f"total is {_fmt(rs)} h. Reviewers often read the summed figure; report the exact count "
-                   f"with an explanation, or reduce unmet hours below 300 on both measures.")
+            msg = (f"Time with any zone unmet is {_fmt(stats.union_hours)} h (within 300), but EnergyPlus's heating "
+                   f"+ cooling total — the figure in the LEED summary table — is {_fmt(rs)} h, because it counts "
+                   f"hours with both heating and cooling misses twice. Report the any-zone figure with an "
+                   f"explanation, or reduce unmet hours below 300 on both measures.")
         else:
             status = PASS
-            msg = f"{_fmt(stats.union_hours)} unmet load hours (exact count); heating + cooling total {_fmt(rs)} h."
+            msg = (f"{_fmt(stats.union_hours)} unmet load hours (any zone, EnergyPlus timestep method); heating + "
+                   f"cooling total {_fmt(rs)} h.")
     else:
         hmax = max(stats.reported_heating or 0, stats.reported_cooling or 0)
         if hmax > LIMIT:
@@ -658,8 +684,8 @@ def _model_finding(model: ModelRun, stats: UnmetStats, edition: str) -> Finding:
                   f"unmet hours alone are {_fmt(hmax)} h (limit 300)."
         elif rs is not None and rs > LIMIT:
             status = REVIEW
-            msg = (f"Heating + cooling unmet hours total {_fmt(rs)} h (> 300). The exact count of hours could be "
-                   f"lower; rerun with `prereview run` to get hourly output and the exact figure.")
+            msg = (f"Heating + cooling unmet hours total {_fmt(rs)} h (> 300). The time with any zone unmet could be "
+                   f"lower; rerun with `prereview run` to get the timestep output that measures it.")
         else:
             status = PASS
             msg = f"Heating + cooling unmet hours total {_fmt(rs)} h (≤ 300)."
@@ -710,44 +736,83 @@ def _model_finding(model: ModelRun, stats: UnmetStats, edition: str) -> Finding:
                    evidence=evidence, objects=objects, fixes=fixes, data=data)
 
 
+def _weather_extremes(model: ModelRun) -> Optional[Tuple[float, float]]:
+    """(0.4th, 99th) percentile of the simulated hourly outdoor dry-bulb (°C): the weather file's own
+    99.6% heating and 1% cooling conditions."""
+    odb = next(iter(model.sql.hourly(VAR_ODB).values()), None)
+    if not odb or len(odb) < 4000:
+        return None
+    v = sorted(odb)
+    n = len(v)
+    return v[int(0.004 * n)], v[min(n - 1, int(0.99 * n))]
+
+
+DD_GAP_K = 6.0  # TMY extremes vs long-term design conditions differ by a few K; more means another climate
+
+
 def _design_day_findings(model: ModelRun, edition: str) -> List[Finding]:
     out: List[Finding] = []
-    dds = _design_days(model)
-    weather = model.weather()
+    dds = [d for d in _design_days(model) if d["max_db"] is not None]
+    clause = f"ASHRAE 90.1-{edition} G3.1.2.2.1 Sizing runs — 99.6% heating and 1% cooling design conditions"
     if not dds:
         out.append(Finding("SIZE-DD", "Design days present", REVIEW,
                            "No SizingPeriod:DesignDay objects found; check how equipment was sized.",
-                           model=model.label, clause="Appendix G equipment capacities (sizing runs)"))
+                           model=model.label, clause=clause))
         return out
-    generic = {"TMY", "TMY2", "TMY3", "TMYX", "IWEC", "IWEC2", "CWEC", "SRC", "WMO", "INTL", "AIRPORT", "AP",
-               "ANN", "HTG", "CLG", "CONDNS", "USA", "CAN", "NOR", "COUNTY", "CITY", "INT", "FIELD", "AFB"}
-    tokens = [t for t in re.findall(r"[A-Za-z]{4,}", weather.upper()) if t not in generic]
-    names = " ".join(d["name"].upper() for d in dds)
-    if tokens and not any(t in names for t in tokens):
-        out.append(Finding(
-            "SIZE-DD", "Design days match the weather file location", FAIL,
-            f"The design days ({', '.join(d['name'] for d in dds[:3])}) do not appear to be for the weather file "
-            f"location ({weather}). Equipment sized for another climate is a common cause of unmet hours and "
-            f"an automatic review comment.",
-            model=model.label, clause="Appendix G equipment capacities — sizing runs use the project's weather/design days",
-            evidence=[{"Design day": d["name"], "Max dry-bulb (°C)": _fmt(d["max_db"])} for d in dds],
-            fixes=["Import the design days from the .ddy file that comes with the project weather file."]))
-    elif model.role == "baseline" and edition == "2010":
-        heat = [d for d in dds if _is_heating_dd(d["name"])]
-        cool = [d for d in dds if not _is_heating_dd(d["name"])]
+    heat = [d for d in dds if _is_heating_dd(d["name"])] or [min(dds, key=lambda d: d["max_db"])]
+    cool = [d for d in dds if not _is_heating_dd(d["name"])] or [max(dds, key=lambda d: d["max_db"])]
+    h_dd = min(heat, key=lambda d: d["max_db"])
+    c_dd = max(cool, key=lambda d: d["max_db"])
+    ext = _weather_extremes(model)
+    weather = model.weather()
+    evidence = [{"Design day": d["name"], "Dry-bulb (°C)": f"{d['max_db']:.1f}"} for d in dds]
+    if ext is not None:
+        p004, p99 = ext
+        evidence += [{"Design day": "Weather file: 0.4th percentile hour (≈ 99.6% heating condition)",
+                      "Dry-bulb (°C)": f"{p004:.1f}"},
+                     {"Design day": "Weather file: 99th percentile hour (≈ 1% cooling condition)",
+                      "Dry-bulb (°C)": f"{p99:.1f}"}]
         problems = []
-        if heat and not any("99.6" in d["name"] for d in heat):
-            problems.append("heating design day is not the 99.6% condition")
-        if cool and not any(re.search(r"(^|[^.\d])1(\.0)?%", d["name"]) for d in cool):
+        if abs(h_dd["max_db"] - p004) > DD_GAP_K:
+            problems.append(f"heating design day {h_dd['max_db']:.1f} °C vs {p004:.1f} °C in the weather file")
+        if abs(c_dd["max_db"] - p99) > DD_GAP_K:
+            problems.append(f"cooling design day {c_dd['max_db']:.1f} °C vs {p99:.1f} °C in the weather file")
+        if problems:
+            out.append(Finding(
+                "SIZE-DD", "Design days match the weather file's climate", FAIL,
+                "Sizing design days do not match the simulated climate: " + "; ".join(problems) + ". Equipment "
+                "sized for another climate is a common cause of unmet hours and an automatic review comment.",
+                model=model.label, clause=clause, evidence=evidence,
+                fixes=["Import the design days from the .ddy file that comes with the project weather file "
+                       f"({weather or 'see the weather file'})."]))
+            return out
+    else:
+        generic = {"TMY", "TMY2", "TMY3", "TMYX", "IWEC", "IWEC2", "CWEC", "SRC", "WMO", "INTL", "AIRPORT", "AP",
+                   "ANN", "HTG", "CLG", "CONDNS", "USA", "CAN", "NOR", "COUNTY", "CITY", "INT", "FIELD", "AFB"}
+        tokens = [t for t in re.findall(r"[A-Za-z]{4,}", weather.upper()) if t not in generic]
+        names = " ".join(d["name"].upper() for d in dds)
+        if tokens and not any(t in names for t in tokens):
+            out.append(Finding(
+                "SIZE-DD", "Design days match the weather file location", REVIEW,
+                f"The design-day names ({', '.join(d['name'] for d in dds[:3])}) do not mention the weather file "
+                f"location ({weather}). Only names were compared (no hourly outdoor temperature output); check the "
+                f"design days come from the project's .ddy file.",
+                model=model.label, clause=clause, evidence=evidence))
+            return out
+    if model.role == "baseline":
+        problems = []
+        hn, cn = h_dd["name"].upper(), c_dd["name"].upper()
+        if re.search(r"(^|[^.\d])99(\.0)?%", hn):
+            problems.append("heating design day is a 99% condition (99.6% required)")
+        if re.search(r"(^|[^\d])(0?\.4|2(\.0)?)%", cn):
             problems.append("cooling design day is not the 1% condition")
         if problems:
             out.append(Finding(
                 "SIZE-DD", "Baseline sizing design days", REVIEW,
-                "Baseline sizing basis differs from 90.1-2010 G3.1.2.2.1: " + "; ".join(problems) + ".",
-                model=model.label, clause="ASHRAE 90.1-2010 G3.1.2.2.1 (99.6% heating, 1% cooling design temperatures)",
-                evidence=[{"Design day": d["name"]} for d in dds],
-                fixes=["Use the 99.6% heating and 1% cooling (DB and WB) design days for baseline sizing runs, "
-                       "or document why another basis is used."]))
+                "Baseline sizing basis differs from Appendix G: " + "; ".join(problems) + ".",
+                model=model.label, clause=clause, evidence=evidence,
+                fixes=["Use the 99.6% heating and 1% cooling (dry-bulb and wet-bulb) design days for baseline "
+                       "sizing runs, or document why another basis is used."]))
     return out
 
 
@@ -810,34 +875,21 @@ def check(ctx: Context) -> List[Finding]:
         p = stats_by_label[ctx.proposed.label].judged
         bvals = [(b.label, stats_by_label[b.label].judged) for b in ctx.baselines if b.label in stats_by_label]
         bvals = [(lbl, v) for lbl, v in bvals if v is not None]
-        clause = CLAUSES.get(ctx.edition, CLAUSES["2010"])
-        if p is None or not bvals:
-            findings.append(Finding("UMLH-50", "Proposed unmet hours within 50 of baseline", SKIPPED,
-                                    "Unmet hours missing for the proposed or baseline model.", clause=clause))
-        else:
+        if p is not None and bvals:
             mean_b = sum(v for _, v in bvals) / len(bvals)
             diff = p - mean_b
-            worst_lbl, worst_b = min(bvals, key=lambda x: x[1])
             ev = [{"Model": ctx.proposed.label, "Unmet hours": _fmt(p)}] + \
                  [{"Model": lbl, "Unmet hours": _fmt(v)} for lbl, v in bvals] + \
                  [{"Model": "Baseline average", "Unmet hours": _fmt(mean_b)}]
-            if diff > DIFF_LIMIT:
-                status = FAIL if ctx.edition == "2010" else REVIEW
-                msg = (f"Proposed has {_fmt(p)} unmet hours vs a baseline average of {_fmt(mean_b)} "
-                       f"(+{_fmt(diff)} h; limit +50).")
-                fixes = ["Reduce the proposed unmet hours (see the diagnosis), or decrease baseline capacities "
-                         "incrementally and re-simulate until the difference is within 50 hours, as the "
-                         "standard prescribes."]
-            elif p - worst_b > DIFF_LIMIT:
-                status = REVIEW
-                msg = (f"Within 50 h of the baseline average ({_fmt(mean_b)} h), but {_fmt(p - worst_b)} h above "
-                       f"{worst_lbl}. Some reviewers compare against each rotation.")
-                fixes = ["State in the submittal that the comparison uses the average of the four rotations."]
-            else:
-                status = PASS
-                msg = f"Proposed {_fmt(p)} h vs baseline average {_fmt(mean_b)} h (difference {_fmt(diff)} h)."
-                fixes = []
-            findings.append(Finding("UMLH-50", "Proposed unmet hours within 50 of baseline", status, msg,
-                                    clause=clause, evidence=ev, fixes=fixes,
+            msg = (f"Proposed {_fmt(p)} h vs baseline average {_fmt(mean_b)} h ({diff:+,.1f} h). 90.1-2010 and "
+                   f"2016 set no limit on this difference — the 50-hour rule was in 90.1-2007 (LEED 2009) only.")
+            fixes = []
+            if diff > OLD_DIFF_LIMIT:
+                msg += " A gap this large is worth one sentence in the modeling narrative."
+                fixes = ["Explain the difference (e.g. proposed equipment sized from the design schedules) in the "
+                         "narrative; reviewers sometimes ask."]
+            findings.append(Finding("UMLH-DIFF", "Proposed vs baseline unmet hours", INFO, msg,
+                                    clause="For information — no limit in 90.1-2010/2016 (G3.1.2.3)",
+                                    evidence=ev, fixes=fixes,
                                     data={"proposed": p, "baseline_mean": mean_b, "source": SOURCE_TEXT}))
     return findings

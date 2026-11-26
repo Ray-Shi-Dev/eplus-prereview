@@ -18,11 +18,17 @@ CL_PLUG = "Table G3.1 #12 Receptacle and other loads — identical in both model
 CL_TSTAT = "Table G3.1 #4 Schedules — thermostat setpoints identical in both models"
 CL_ZONES = "Table G3.1 #1 Design model / #7 thermal blocks — same building, zones and conditioned area"
 CL_SITE = "Appendix G G2 — same simulation program, weather file and simulation period"
-CL_INFIL = {"2010": "G3.1.1 / Table G3.1 #5 — infiltration modeled the same way in both models",
-            "2016": "Table G3.1 #5(b) — baseline infiltration fixed; proposed may differ only with justification"}
-CL_OA = "G3.1.2.6 (2010) / G3.1.2.5 (2016) — minimum outdoor air the same in both models (DCV exceptions)"
+CL_INFIL = {"2010": "ASHRAE 90.1-2010 Table G3.1 #5 Building Envelope — infiltration modeled the same way in both "
+                    "models unless a difference is justified",
+            "2016": "ASHRAE 90.1-2016 Table G3.1 #5(b) — baseline infiltration fixed; a lower proposed rate needs "
+                    "testing or justification"}
+CL_OA = ("ASHRAE 90.1-2010 G3.1.2.6 / 2016 G3.1.2.5 — minimum outdoor air (2016: system outdoor-air intake) the "
+         "same in both models, with exceptions such as DCV")
 CL_HVAC = "Table G3.1 #4 Schedules — HVAC system operation schedule the same in both models"
-CL_LIGHT = "Table G3.1 #4/#6 — lighting schedules the same (control credits via Table G3.2, not schedules)"
+CL_LIGHT = {"2010": "ASHRAE 90.1-2010 Table G3.1 #4/#6 — same schedules; control credits via Table G3.2 power "
+                    "adjustments",
+            "2016": "ASHRAE 90.1-2016 Table G3.1 #4/#6 — same schedules, except proposed occupancy-sensor credits "
+                    "taken as schedule reductions (Table G3.7)"}
 
 V_PEOPLE = "Zone People Occupant Count"
 V_ELEC = "Zone Electric Equipment Electricity Rate"
@@ -148,6 +154,8 @@ def _series_check(ctx: Context, rule_id: str, title: str, var: str, clause: str,
     if compared == 0:
         return Finding(rule_id, title, SKIPPED, f"No hourly “{var}” output in the models (none in the "
                        f"building, or not requested — use `prereview run`).", clause=clause)
+    for m in [p] + ctx.baselines:
+        m.sql.forget(var)
     if rows:
         nb = len({r["Baseline"] for r in rows})
         return Finding(rule_id, title, status_on_diff,
@@ -162,7 +170,7 @@ def _series_check(ctx: Context, rule_id: str, title: str, var: str, clause: str,
 def _site(ctx: Context) -> Finding:
     p = ctx.proposed
     rows = []
-    bad = False
+    bad = minor = False
     for b in ctx.baselines:
         for label, pa, ba in (("Weather file", p.weather(), b.weather()),
                               ("EnergyPlus version", p.sql.version() or "", b.sql.version() or ""),
@@ -170,9 +178,18 @@ def _site(ctx: Context) -> Finding:
                               ("Timesteps per hour", str(p.sql.timesteps_per_hour()), str(b.sql.timesteps_per_hour()))):
             same = pa.strip().upper() == ba.strip().upper()
             if not same:
-                bad = True
+                if label == "Timesteps per hour":
+                    minor = True
+                else:
+                    bad = True
             rows.append({"Baseline": b.label, "Item": label, "Proposed": pa, "Baseline value": ba,
                          "Same": "yes" if same else "NO"})
+    if minor and not bad:
+        return Finding("CONS-SITE", "Same weather, program version and run period", REVIEW,
+                       "Same weather, version and run period, but a different number of timesteps per hour. Not a "
+                       "rule, but it changes unmet-hour counts and part-load results slightly; use the same "
+                       "timestep unless there is a reason.", clause=CL_SITE,
+                       evidence=[r for r in rows if r["Same"] == "NO"])
     if bad:
         return Finding("CONS-SITE", "Same weather, program version and run period", FAIL,
                        "Proposed and baseline were not simulated under the same conditions.",
@@ -246,8 +263,9 @@ def _schedule_series(model: ModelRun) -> Dict[str, List[float]]:
 
 def _infiltration(ctx: Context) -> Finding:
     p = ctx.proposed
-    status_diff = FAIL if ctx.edition == "2010" else REVIEW
+    status_diff = REVIEW  # a lower proposed rate is allowed with testing/justification
     clause = CL_INFIL.get(ctx.edition, CL_INFIL["2010"])
+    sched_compared = 0
     pa = _nominal_by_zone(p, "NominalInfiltration", "DesignLevel")
     psched = _nominal_schedules(p, "NominalInfiltration")
     if not pa and not p.sql.has_table("NominalInfiltration"):
@@ -272,6 +290,7 @@ def _infiltration(ctx: Context) -> Finding:
                 for sp, sb in zip(sorted(psched.get(pk, [])), sorted(bsched.get(bk, []))):
                     a, c = pser.get(sp), bser.get(sb)
                     if a is not None and c is not None:
+                        sched_compared += 1
                         n, _, first = _compare(a, c, 0.01, 1e-6)
                         if n:
                             issue = f"schedule {sp} vs {sb}: {n} hours differ (first {_stamp(p, first)})"
@@ -285,25 +304,33 @@ def _infiltration(ctx: Context) -> Finding:
         if ctx.edition == "2016":
             msg += (" Under 90.1-2016 the baseline uses a fixed rate; a lower proposed rate needs envelope "
                     "testing or documented justification.")
+        else:
+            msg += " A difference needs justification (e.g. envelope testing); otherwise use the same input."
         return Finding("CONS-INFIL", "Infiltration the same", status_diff, msg, clause=clause,
                        evidence=rows[:30], objects=objs[:30],
-                       fixes=["Use the same infiltration objects, design flow and schedule in both models "
-                              "(90.1-2010), or document the basis for any difference (90.1-2016)."])
+                       fixes=["Use the same infiltration objects, design flow and schedule in both models, or "
+                              "document the basis for the difference (air-leakage testing, specification)."])
+    if sched_compared == 0 and psched:
+        return Finding("CONS-INFIL", "Infiltration the same", PASS,
+                       "Same infiltration design flow in every zone. Schedules not compared: no hourly Schedule "
+                       "Value output (use `prereview run`).", clause=clause)
     return Finding("CONS-INFIL", "Infiltration the same", PASS,
                    "Same infiltration design flow and schedule in every zone.", clause=clause)
 
 
 def _lighting_schedules(ctx: Context) -> Finding:
     p = ctx.proposed
+    cl_light = CL_LIGHT.get(ctx.edition, CL_LIGHT["2010"])
     if _comparable(ctx):
         return Finding("CONS-LSCHED", "Lighting schedules the same", SKIPPED, f"Lighting schedules "
-                       f"{_comparable(ctx)}.", clause=CL_LIGHT)
+                       f"{_comparable(ctx)}.", clause=cl_light)
     psched = _nominal_schedules(p, "NominalLighting")
     if not psched:
         return Finding("CONS-LSCHED", "Lighting schedules the same", SKIPPED, "No lighting objects found.",
-                       clause=CL_LIGHT)
+                       clause=cl_light)
     pser = _schedule_series(p)
     rows, objs = [], []
+    compared = 0
     for b in ctx.baselines:
         mapping, _, _ = _zone_map(p, b)
         bsched = _nominal_schedules(b, "NominalLighting")
@@ -317,6 +344,7 @@ def _lighting_schedules(ctx: Context) -> Finding:
             c = bser.get(sorted(bn)[0])
             if a is None or c is None:
                 continue
+            compared += 1
             n, mx, first = _compare(a, c, 0.0, 0.005)
             if n:
                 rows.append({"Baseline": b.label, "Zone": pk, "Proposed schedule": sorted(names)[0],
@@ -325,20 +353,59 @@ def _lighting_schedules(ctx: Context) -> Finding:
                 if pk not in objs:
                     objs.append(pk)
     if rows:
-        return Finding("CONS-LSCHED", "Lighting schedules the same", REVIEW,
-                       f"Lighting schedules differ in {len(objs)} zone{'s' if len(objs) != 1 else ''}. Appendix G "
-                       f"keeps schedules identical; lighting-control savings are taken through Table G3.2 power "
-                       f"adjustments (or daylighting simulation), not a reduced schedule.",
-                       clause=CL_LIGHT, evidence=rows[:30], objects=objs[:30],
-                       fixes=["Use the proposed lighting schedule in the baseline.",
-                              "If the proposed schedule was reduced for occupancy sensors, apply the Table G3.2 "
-                              "power adjustment instead and document it."])
+        if ctx.edition == "2016":
+            msg = (f"Lighting schedules differ in {len(objs)} zone{'s' if len(objs) != 1 else ''}. Under 90.1-2016 "
+                   f"the proposed schedule may be reduced for occupancy sensors and other controls (Table G3.7); "
+                   f"check every difference is such a reduction, at the table's rates.")
+            fixes = ["Check each zone's proposed reduction against Table G3.7 for its space type and control, and "
+                     "keep the baseline schedule unreduced.",
+                     "Any other difference: use the same schedule in both models."]
+        else:
+            msg = (f"Lighting schedules differ in {len(objs)} zone{'s' if len(objs) != 1 else ''}. Under 90.1-2010 "
+                   f"schedules stay identical; lighting-control savings are taken through Table G3.2 power "
+                   f"adjustments (or daylighting simulation), not a reduced schedule.")
+            fixes = ["Use the proposed lighting schedule in the baseline.",
+                     "If the proposed schedule was reduced for occupancy sensors, apply the Table G3.2 power "
+                     "adjustment instead and document it."]
+        return Finding("CONS-LSCHED", "Lighting schedules the same", REVIEW, msg, clause=cl_light,
+                       evidence=rows[:30], objects=objs[:30], fixes=fixes)
+    if compared == 0:
+        return Finding("CONS-LSCHED", "Lighting schedules the same", SKIPPED,
+                       "Lighting schedules not compared: no hourly Schedule Value output for them (use "
+                       "`prereview run`).", clause=cl_light)
     return Finding("CONS-LSCHED", "Lighting schedules the same", PASS,
-                   "Lighting schedules are identical hour by hour.", clause=CL_LIGHT)
+                   f"Lighting schedules are identical hour by hour ({compared} zone comparisons).", clause=cl_light)
+
+
+def _system_min_oa(model: ModelRun) -> Tuple[Optional[float], str]:
+    """Sum of the air loops' minimum outdoor-air intake (m3/s) from Controller:OutdoorAir: the IDF value,
+    or the autosized value from ComponentSizes. (None, why) when it cannot be read."""
+    if model.idf is None:
+        return None, "no IDF next to the results"
+    sizes = {(r["name"] or "").upper(): r["value"] for r in model.sql.component_sizes()
+             if r["type"].upper() == "CONTROLLER:OUTDOORAIR" and (r["desc"] or "").endswith("Minimum Outdoor Air Flow Rate")}
+    total, n = 0.0, 0
+    for c in model.idf.by_class("Controller:OutdoorAir"):
+        raw = c.get(5).strip()
+        try:
+            v = float(raw)
+        except ValueError:
+            v = sizes.get(c.name.upper())
+        if v is None:
+            return None, f"minimum outdoor air of {c.name} not reported"
+        total += v
+        n += 1
+    if n and total <= 1e-6:
+        return None, "controllers' minimum is zero; intake set by Controller:MechanicalVentilation or schedules"
+    other = [o.cls for o in model.idf.objects if o.key == "AIRLOOPHVAC:DEDICATEDOUTDOORAIRSYSTEM"
+             or (o.key.startswith("ZONEHVAC:") and "OUTDOOR" in " ".join(o.fields).upper())]
+    note = " (zone equipment / DOAS outdoor air not included)" if other else ""
+    return (total if n else None), (f"{n} outdoor-air controllers{note}" if n else "no outdoor-air controllers")
 
 
 def _outdoor_air(ctx: Context) -> Finding:
     p = ctx.proposed
+    clause = CL_OA
 
     def oa(model: ModelRun) -> Dict[str, float]:
         out: Dict[str, float] = {}
@@ -348,10 +415,8 @@ def _outdoor_air(ctx: Context) -> Finding:
         return out
 
     pa = oa(p)
-    if not pa:
-        return Finding("CONS-OA", "Design outdoor air the same", SKIPPED,
-                       "No zone sizing results (Sizing:Zone) to compare outdoor air.", clause=CL_OA)
-    rows, objs = [], []
+    psys, pnote = _system_min_oa(p)
+    rows, objs, sys_rows = [], [], []
     for b in ctx.baselines:
         mapping, _, _ = _zone_map(p, b)
         ba = oa(b)
@@ -364,38 +429,45 @@ def _outdoor_air(ctx: Context) -> Finding:
                              "Baseline (m³/s)": f"{y:.4f}", "Difference": f"{(x - y) / max(y, 1e-9):+.0%}"})
                 if pk not in objs:
                     objs.append(pk)
-    if rows:
-        return Finding("CONS-OA", "Design outdoor air the same", REVIEW,
-                       f"Design outdoor airflow differs in {len(objs)} zone{'s' if len(objs) != 1 else ''}. "
-                       f"Minimum ventilation must match unless an exception applies (e.g. DCV in the proposed "
-                       f"where not required).",
-                       clause=CL_OA, evidence=rows[:30], objects=objs[:30],
-                       fixes=["Use the same DesignSpecification:OutdoorAir rates in both models.",
-                              "If the proposed uses demand-controlled ventilation, keep design rates equal and "
-                              "document the exception."])
-    return Finding("CONS-OA", "Design outdoor air the same", PASS, "Same design outdoor airflow in every zone.",
-                   clause=CL_OA)
+        bsys, bnote = _system_min_oa(b)
+        if psys is not None and bsys is not None and max(psys, bsys) > 1e-6 and \
+                abs(psys - bsys) / max(psys, bsys) > 0.02:
+            sys_rows.append({"Baseline": b.label, "Proposed intake (m³/s)": f"{psys:.3f}",
+                             "Baseline intake (m³/s)": f"{bsys:.3f}",
+                             "Difference": f"{(psys - bsys) / max(bsys, 1e-9):+.0%}", "Basis": bnote})
+    if not pa and psys is None:
+        return Finding("CONS-OA", "Outdoor air the same", SKIPPED,
+                       "No zone sizing results or outdoor-air controllers to compare.", clause=clause)
+    if rows or sys_rows:
+        parts = []
+        if sys_rows:
+            parts.append("minimum outdoor-air intake of the air systems differs")
+        if rows:
+            parts.append(f"zone design outdoor air differs in {len(objs)} zone{'s' if len(objs) != 1 else ''}")
+        return Finding("CONS-OA", "Outdoor air the same", REVIEW,
+                       _cap(" and ".join(parts)) + ". Minimum ventilation (system outdoor-air intake under 90.1-2016) "
+                       "must match unless an exception applies, e.g. demand-controlled ventilation in the proposed "
+                       "where it is not required.",
+                       clause=clause, evidence=(sys_rows + rows)[:30], objects=objs[:30],
+                       fixes=["Use the same DesignSpecification:OutdoorAir rates and the same minimum outdoor-air "
+                              "intake in both models.",
+                              "If the proposed uses demand-controlled ventilation or a DOAS, document the exception "
+                              "and the intake each model uses."])
+    msg = "Same zone design outdoor air in every zone"
+    msg += (f" and the same minimum system intake ({psys:.3f} m³/s, {pnote})." if psys is not None else
+            f"; system intake not compared ({pnote}).")
+    return Finding("CONS-OA", "Outdoor air the same", PASS, msg, clause=clause)
+
+
+def _cap(text: str) -> str:
+    return text[:1].upper() + text[1:]
 
 
 def _end_use_equipment(ctx: Context) -> Optional[Finding]:
     """Interior equipment energy from the ABUPS end-use table (all fuels)."""
     def eq(model: ModelRun) -> Optional[float]:
-        t = model.sql.tabular("AnnualBuildingUtilityPerformanceSummary", "End Uses")
-        row = None
-        for k in t:
-            if k.strip().upper() == "INTERIOR EQUIPMENT":
-                row = t[k]
-        if row is None:
-            return None
-        total = 0.0
-        for col, (val, units) in row.items():
-            if col.strip().lower() in ("water", "district cooling water"):
-                continue
-            try:
-                total += float(val)
-            except ValueError:
-                pass
-        return total
+        row = model.end_uses_gj().get("INTERIOR EQUIPMENT")
+        return None if row is None else sum(row.values())
 
     p = eq(ctx.proposed)
     if p is None:

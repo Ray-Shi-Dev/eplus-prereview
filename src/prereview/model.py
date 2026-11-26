@@ -25,30 +25,39 @@ class ModelRun:
 
     @classmethod
     def load(cls, path: str, role: str, label: Optional[str] = None) -> "ModelRun":
-        """path: a run folder (with eplusout.sql) or an .sql file."""
+        """path: a run folder or one run's .sql file.
+
+        Files are paired by name: eplusout.sql with eplusout.err and in.idf / eplusout.expidf (EnergyPlus
+        defaults), or X.sql with X.err and X.idf / X.expidf. A folder holding several runs' .sql files is
+        refused, so results from different runs are never mixed."""
+        def exists(name: str) -> Optional[str]:
+            p = os.path.join(folder, name)
+            return p if os.path.isfile(p) else None
+
         if os.path.isdir(path):
             folder = path
-            sql: Optional[str] = os.path.join(folder, "eplusout.sql")
-            if not os.path.isfile(sql):
+            sql: Optional[str] = exists("eplusout.sql")
+            if sql is None:
                 cands = sorted(glob.glob(os.path.join(folder, "*.sql")))
+                if len(cands) > 1:
+                    raise ValueError(
+                        f"{folder} holds several .sql files ({', '.join(os.path.basename(c) for c in cands[:4])}"
+                        f"{' …' if len(cands) > 4 else ''}); pass the .sql file of one run instead of the folder.")
                 sql = cands[0] if cands else None
         else:
             sql = path
             folder = os.path.dirname(os.path.abspath(path))
         stem = os.path.splitext(os.path.basename(sql))[0] if sql else "eplusout"
-        err_path = None
-        for cand in (os.path.join(folder, stem + ".err"),
-                     os.path.join(folder, "eplusout.err")):
-            if os.path.isfile(cand):
-                err_path = cand
-                break
-        if err_path is None:
+        err_path = exists(stem + ".err")
+        if err_path is None and sql is None:
             errs = sorted(glob.glob(os.path.join(folder, "*.err")))
-            err_path = errs[0] if errs else None
+            err_path = errs[0] if len(errs) == 1 else None
         idf_path = None
-        for cand in [os.path.join(folder, "in.idf")] + sorted(glob.glob(os.path.join(folder, "*.idf"))):
-            if os.path.isfile(cand):
-                idf_path = cand
+        names = ([stem + ".expidf", "in.idf", stem + ".idf"] if stem == "eplusout" else
+                 [stem + ".expidf", stem + ".idf"])
+        for name in names:
+            idf_path = exists(name)
+            if idf_path:
                 break
         sql_res = None
         if sql:
@@ -58,8 +67,6 @@ class ModelRun:
                     sql_res = None
             except Exception:  # noqa: BLE001 - unreadable/partial file: treat as no results
                 sql_res = None
-        if sql_res is None and err_path is None:
-            raise FileNotFoundError(f"No EnergyPlus results (.sql or .err) found in {folder}")
         run = cls(
             label=label or os.path.basename(os.path.normpath(folder)),
             role=role,
@@ -69,10 +76,15 @@ class ModelRun:
             idf=Idf.from_file(idf_path) if idf_path else None,
             idf_path=idf_path,
         )
-        if err_path is None:
+        if sql_res is None and err_path is None:
+            run.notes.append(f"No EnergyPlus results (.sql or .err) found in {folder}.")
+        elif err_path is None:
             run.notes.append("No .err file found next to the SQL output; err triage skipped.")
-        if sql_res is None:
+        elif sql_res is None:
             run.notes.append("No usable SQL output (the run stopped early or Output:SQLite was missing).")
+        if idf_path is None and sql_res is not None:
+            run.notes.append("No IDF found next to the results; checks that read inputs (HVAC schedules, reheat "
+                             "types, reporting tolerance) are limited.")
         return run
 
     @property
@@ -122,11 +134,30 @@ class ModelRun:
     def conditioned_area(self) -> Optional[float]:
         if self.sql is None:
             return None
-        return self.sql.tab_float("AnnualBuildingUtilityPerformanceSummary", "Building Area",
-                                  "Net Conditioned Building Area", "Area")
+        return self.sql.tab_si("AnnualBuildingUtilityPerformanceSummary", "Building Area",
+                               "Net Conditioned Building Area", "Area", "m2")
+
+    def end_uses_gj(self) -> Dict[str, Dict[str, float]]:
+        """ABUPS End Uses by end use (upper case) and fuel column, converted to GJ. Water is left out."""
+        from .sqlout import to_si, to_float
+        out: Dict[str, Dict[str, float]] = {}
+        if self.sql is None:
+            return out
+        t = self.sql.tabular("AnnualBuildingUtilityPerformanceSummary", "End Uses")
+        for row, cols in t.items():
+            name = row.strip().upper()
+            if not name:
+                continue
+            for col, (val, units) in cols.items():
+                if "water" in col.strip().lower() and "district" not in col.strip().lower():
+                    continue
+                v, si = to_si(to_float(val), units or "GJ")
+                if v is not None and si == "GJ":
+                    out.setdefault(name, {})[col.strip()] = v
+        return out
 
     def total_area(self) -> Optional[float]:
         if self.sql is None:
             return None
-        return self.sql.tab_float("AnnualBuildingUtilityPerformanceSummary", "Building Area",
-                                  "Total Building Area", "Area")
+        return self.sql.tab_si("AnnualBuildingUtilityPerformanceSummary", "Building Area",
+                               "Total Building Area", "Area", "m2")

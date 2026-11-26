@@ -7,7 +7,7 @@ import os
 import time
 from typing import Dict, List
 
-from faultlab.lab import BUILDINGS, CLEAN_PROJECT, ROTATIONS, Expect, faults
+from faultlab.lab import BUILDINGS, CLEAN_PROJECT, KNOWN_TRUE, ROTATIONS, Expect, faults
 from prereview.model import ModelRun
 from prereview.rules import run_all
 from prereview.rules.base import FAIL, REVIEW, Context, Finding, ProjectInfo
@@ -16,7 +16,8 @@ from prereview.rules.base import FAIL, REVIEW, Context, Finding, ProjectInfo
 def _project(d: Dict) -> ProjectInfo:
     return ProjectInfo(name=d.get("name", "lab"), edition=d.get("edition", "2010"),
                        building_type=d.get("building_type"), floors_above_grade=d.get("floors_above_grade"),
-                       heating_source=d.get("heating_source"), rotation_exception=d.get("rotation_exception", False))
+                       heating_source=d.get("heating_source"), climate_zone=d.get("climate_zone"),
+                       rotation_exception=d.get("rotation_exception", False))
 
 
 def _load(path: str, role: str, label: str, cache: Dict[str, ModelRun]) -> ModelRun:
@@ -64,8 +65,11 @@ def score(lab: str) -> Dict:
         p = _load(os.path.join(runs, "proposed"), "proposed", "proposed", cache)
         bl = [_load(os.path.join(runs, f"B{r:03d}"), "baseline", f"B{r:03d}", cache) for r in ROTATIONS]
         findings = run_all(Context(p, bl, _project(CLEAN_PROJECT[b])))
+        known = KNOWN_TRUE.get(b, {})
         result["clean"][b] = {
-            "fails": [f.to_dict() for f in findings if f.status == FAIL],
+            "fails": [f.to_dict() for f in findings if f.status == FAIL and f.rule_id not in known],
+            "known_true": [{"rule": f.rule_id, "model": f.model, "message": f.message, "why": known[f.rule_id]}
+                           for f in findings if f.status == FAIL and f.rule_id in known],
             "reviews": [{"rule": f.rule_id, "model": f.model, "message": f.message} for f in findings
                         if f.status == REVIEW],
             "n_findings": len(findings),
@@ -130,6 +134,8 @@ def markdown(r: Dict) -> str:
     lines += ["", "## Clean sets", ""]
     for b, v in r["clean"].items():
         lines.append(f"- **{b}**: {len(v['fails'])} FAIL, {len(v['reviews'])} REVIEW")
+        for kt in v.get("known_true", []):
+            lines.append(f"  - FAIL {kt['rule']} (true finding, not counted): {kt['why']}")
         for rv in v["reviews"]:
             lines.append(f"  - REVIEW {rv['rule']} {rv['model']}: {rv['message'][:200]}")
         for fl in v["fails"]:

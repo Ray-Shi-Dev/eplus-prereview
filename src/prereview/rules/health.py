@@ -13,6 +13,7 @@ from .base import FAIL, INFO, PASS, REVIEW, Context, Finding
 
 CLAUSE_RUN = "ASHRAE 90.1 Appendix G G2 simulation general requirements (8760-hour annual simulation)"
 CLAUSE_ERR = "LEED EA Prerequisite / Credit energy model review — simulation output must be free of unresolved errors"
+UNKNOWN_REVIEW_COUNT = 100  # an unexplained warning seen this often is not assumed harmless
 
 
 def _example_objects(msgs: List[ErrMessage], limit: int = 5) -> List[str]:
@@ -46,8 +47,13 @@ def check_model(model: ModelRun) -> List[Finding]:
                 explain = explain or kb.meaning
                 fixes.extend(f for f in kb.fixes if f not in fixes)
         crashed = err is not None and err.warnings_total is None
-        lead = ("EnergyPlus stopped without writing its final summary (it crashed or was killed) — the last "
-                "messages usually point at the cause. " if crashed else "EnergyPlus did not complete this run. ")
+        if err is None and model.sql is None:
+            lead = "No EnergyPlus results (.sql or .err) were found for this model — check the folder or file path. "
+        elif crashed:
+            lead = ("EnergyPlus stopped without writing its final summary (it crashed or was killed) — the last "
+                    "messages usually point at the cause. ")
+        else:
+            lead = "EnergyPlus did not complete this run. "
         out.append(Finding(
             "HEALTH-RUN", "Simulation completed", FAIL,
             lead + (explain or "See the severe/fatal messages below."),
@@ -137,8 +143,13 @@ def check_model(model: ModelRun) -> List[Finding]:
         status = (kb.status if kb and kb.status else INFO)
         if status == REVIEW and kb is not None and n < kb.review_min_count:
             status = INFO
-        row = {"Count": str(n), "Topic": kb.title if kb else "Other warning", "Message": _first_text(msgs),
-               "What it means": kb.meaning if kb else "Not in the knowledge base."}
+        if kb is None and n >= UNKNOWN_REVIEW_COUNT:
+            status = REVIEW
+        row = {"Count": str(n), "Topic": kb.title if kb else "Not in the knowledge base", "Message": _first_text(msgs),
+               "What it means": kb.meaning if kb else ("Frequent warning prereview does not know — read it in the "
+                                                       ".err file and decide whether it affects results."
+                                                       if n >= UNKNOWN_REVIEW_COUNT else
+                                                       "Not in the knowledge base (rare in this run).")}
         if status == REVIEW:
             review_rows.append(row)
             if kb:
@@ -148,19 +159,21 @@ def check_model(model: ModelRun) -> List[Finding]:
             info_rows.append(row)
     if review_rows:
         out.append(Finding(
-            "HEALTH-WARN", "Warnings that affect results", REVIEW,
-            f"{len(review_rows)} kind{'s' if len(review_rows) != 1 else ''} of warning can change results and are "
-            f"likely to draw a review comment.",
+            "HEALTH-WARN", "Warnings that may affect results", REVIEW,
+            f"{len(review_rows)} kind{'s' if len(review_rows) != 1 else ''} of warning may change results (or are "
+            f"frequent and not in the knowledge base) and are likely to draw a review comment.",
             model=model.label, clause=CLAUSE_ERR, evidence=review_rows, objects=review_objs[:10],
             fixes=review_fixes))
     if info_rows:
         info_rows.sort(key=lambda r: -int(r["Count"]))
         unused = ", ".join(f"{v} {k}" for k, v in err.unused.items()) if err.unused else ""
+        unknown = sum(1 for r in info_rows if r["Topic"] == "Not in the knowledge base")
         out.append(Finding(
             "HEALTH-INFO", "Other warnings", INFO,
-            f"{len(info_rows)} other kind{'s' if len(info_rows) != 1 else ''} of warning, generally harmless "
-            f"(explained below)." + (f" Unused objects in the input: {unused}." if unused else ""),
-            model=model.label, evidence=info_rows[:25]))
+            f"{len(info_rows)} other kind{'s' if len(info_rows) != 1 else ''} of warning: "
+            f"{len(info_rows) - unknown} known to be informational, {unknown} rare and not in the knowledge base "
+            f"(listed below)." + (f" Unused objects in the input: {unused}." if unused else ""),
+            model=model.label, evidence=info_rows[:25], data={"unknown": unknown}))
     return out
 
 

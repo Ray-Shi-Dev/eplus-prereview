@@ -48,7 +48,8 @@ class ProjectInfo:
     edition: str = "2010"
     building_type: Optional[str] = None      # nonresidential | residential | heated_only_storage
     floors_above_grade: Optional[int] = None
-    heating_source: Optional[str] = None     # fossil | electric
+    heating_source: Optional[str] = None     # fossil (incl. hybrid, purchased heat) | electric — 90.1-2010
+    climate_zone: Optional[str] = None       # ASHRAE 169 zone, e.g. "2A", "4C" — 90.1-2016 system type
     rotation_exception: bool = False         # orientation dictated by site (rating authority approval)
     notes: List[str] = field(default_factory=list)
 

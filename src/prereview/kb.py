@@ -192,7 +192,7 @@ KB: List[KbEntry] = [
              "one zone; results are generally usable — say so in the submittal.",
              "Check for zones with very high thermal mass or no HVAC."], status="REVIEW", stage="simulation",
             severe_status="REVIEW", fail_if=r"Temp Comparison[^|]*Fail Convergence"),
-    KbEntry("S-HVAC-ITER", r"Maximum iterations .* exceeded for all HVAC loops",
+    KbEntry("S-HVAC-ITER", r"Maximum iterations .* exceeded for all HVAC loops|Exceeding Maximum iterations for all HVAC",
             "HVAC iterations did not converge",
             "In some timesteps the HVAC solution did not converge. A few occurrences are normal; thousands point to "
             "unstable controls.",
@@ -222,6 +222,46 @@ KB: List[KbEntry] = [
             "conflicting setpoints).",
             ["Check plant equipment sizing and loop setpoints; compare with the loop's design temperatures."],
             status="REVIEW", stage="simulation"),
+    KbEntry("S-PLANT-LIMIT", r"Plant loop exceeding (upper|lower) temperature limit",
+            "Plant loop outside its temperature limits",
+            "A plant loop's fluid went above its Maximum Loop Temperature (or below its minimum). Common on "
+            "service hot water loops whose water-heater setpoint is above the loop maximum; on heating/cooling "
+            "loops it can mean equipment fighting setpoints.",
+            ["Check the PlantLoop maximum/minimum loop temperatures against the setpoints of the equipment on it "
+             "(e.g. water heater setpoint vs loop maximum)."], status="REVIEW", stage="simulation",
+            review_min_count=100),
+    KbEntry("S-CONTROLLER", r"FindRootSimpleController|Controller error for controller|"
+            r"Controller:WaterCoil.*(did not converge|exceeded)",
+            "Water-coil controller did not converge",
+            "A water-coil controller could not find a flow that meets its setpoint — usually the coil is at full "
+            "flow and still short (capacity), or the setpoint is unreachable. Results are usually usable, but it "
+            "points at a coil or plant that cannot do its job at those times.",
+            ["Check the coil named in the message: design water flow, plant supply temperature and the setpoint it "
+             "controls to; compare with the unmet-hours diagnosis."], status="REVIEW", stage="simulation",
+            severe_status="REVIEW"),
+    KbEntry("W-CURVE-RANGE", r"(range in .* curve|outside the range of .* given in .* curve|"
+            r"is outside the range of (condenser|evaporator) outlet temperatures|outside the range of part-load "
+            r"ratios)",
+            "Equipment operating outside its performance-curve range",
+            "Chiller or DX operating conditions fell outside the curve's valid range, so EnergyPlus clamps or "
+            "extrapolates performance. Thousands of occurrences mean the curve set does not suit the operating "
+            "conditions (common with condenser water in hot climates).",
+            ["Check the curve set matches the equipment and its operating range (condenser water and leaving "
+             "chilled water temperatures)."], status="REVIEW", stage="simulation", review_min_count=1000),
+    KbEntry("W-TOWER-RANGE", r"(Tower (approach|range) temperature is out(side)? (of range|model boundaries)|"
+            r"Inlet air wet-bulb temperature is out(side)? (of range|model boundaries)|range for the cooling tower "
+            r".* likely exceeds the bounds of the model)",
+            "Cooling tower outside its model range",
+            "The cooling tower model's empirical correlation is used outside its valid range (approach, range or "
+            "wet-bulb), so tower performance is extrapolated.",
+            ["Check the tower design inputs (approach, range, design wet-bulb) suit the climate; consider a tower "
+             "model whose range covers it."], status="REVIEW", stage="simulation", review_min_count=1000),
+    KbEntry("W-COIL-SIZING", r"(Maximum Actuated Flow is zero|design coil load is zero|In calculating the design "
+            r"coil UA)",
+            "Water coil sizing note",
+            "A water coil was sized with zero design load or flow, or its UA calculation was adjusted. Common for "
+            "coils with no load on the design days.", ["Confirm the coil is meant to have no design load."],
+            status="INFO", stage="sizing"),
     KbEntry("S-DAYLIGHT", r"Fraction of zone or space controlled by the Daylighting reference points is <",
             "Daylighting controls cover part of the zone",
             "Informational: the daylighting control fractions add up to less than 1, so part of the zone's "
@@ -233,8 +273,9 @@ KB: List[KbEntry] = [
             "Informational: with NORMAL damper heating action the maximum flow fraction during reheat is not used.",
             [], status="INFO", stage="simulation"),
     KbEntry("S-WATER", r"(Use side nodes are specified; Peak Volumetric Use Flow Rate will not be used|"
-            r"Target water temperature is less than the cold water temperature|Pump nominal power or motor "
-            r"efficiency is set to)",
+            r"Target water temperature is less than the cold water temperature|Target water temperature should be "
+            r"greater than or equal to the cold water temperature|Pump nominal power or motor efficiency is set to|"
+            r"Recovery Efficiency and Energy Factor could not be calculated)",
             "Service water heating input note",
             "Informational message about service water heating inputs.",
             ["Confirm service water heating inputs are the same in proposed and baseline where required."],

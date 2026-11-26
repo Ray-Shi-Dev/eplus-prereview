@@ -153,6 +153,7 @@ def _card(f: Finding) -> str:
 
 def _unmet_chart(findings: List[Finding]) -> str:
     bars = []
+    summed = False
     for f in findings:
         if f.rule_id != "UMLH-300" or not f.data:
             continue
@@ -160,6 +161,7 @@ def _unmet_chart(findings: List[Finding]) -> str:
         if v is None:
             rh, rc = f.data.get("reported_heating"), f.data.get("reported_cooling")
             v = (rh or 0) + (rc or 0) if (rh is not None or rc is not None) else None
+            summed = summed or v is not None
         s = f.data.get("reported_leed")
         if v is not None:
             bars.append((f.model, float(v), float(s) if s is not None else None))
@@ -172,8 +174,9 @@ def _unmet_chart(findings: List[Finding]) -> str:
     x = lambda v: left + (w - left - 70) * v / vmax  # noqa: E731
     out = [f'<svg viewBox="0 0 {w} {h}" width="100%" role="img" aria-label="Unmet load hours by model" '
            f'style="background:#fff;border:1px solid #e4e7ec;border-radius:10px">']
-    out.append(f'<text x="{left}" y="17" font-size="12" fill="#475467">Hours with any zone unmet (occupied)'
-               f' — dashed: EnergyPlus heating + cooling total</text>')
+    title = ("Unmet load hours (any zone, occupied) — dashed: EnergyPlus heating + cooling total"
+             if not summed else "Unmet load hours — heating + cooling total (no timestep output for an any-zone count)")
+    out.append(f'<text x="{left}" y="17" font-size="12" fill="#475467">{_e(title)}</text>')
     for i, (label, v, s) in enumerate(bars):
         y = top + i * row_h
         color = "#d92d20" if v > 300 else "#1d4ed8"
@@ -267,9 +270,10 @@ def _harmless_warnings(infos: List[Finding], order: Dict[str, int]) -> str:
     unused = "; ".join(f"{f.model}: {f.message.split('Unused objects in the input: ')[1].rstrip('.')}"
                        for f in infos if "Unused objects in the input: " in f.message)
     return (f'<div class="card INFO"><div class="head"><span class="pill INFO">INFO</span><h3>Other warnings '
-            f'(generally harmless)</h3><span class="rid">HEALTH-INFO</span></div><p class="msg">'
-            f'{len(rows)} kinds of warning across {len(models)} model{"s" if len(models) != 1 else ""}, explained '
-            f'below. None of them is known to change results.</p>'
+            f'(informational or rare)</h3><span class="rid">HEALTH-INFO</span></div><p class="msg">'
+            f'{len(rows)} kinds of warning across {len(models)} model{"s" if len(models) != 1 else ""}. '
+            f'Rows marked “Not in the knowledge base” are rare warnings prereview cannot explain; the others are '
+            f'known to be informational.</p>'
             + (f'<p class="note">Unused objects — {_e(unused)}</p>' if unused else "")
             + f"<details><summary>Warnings by model ({len(rows)} rows)</summary>{_table(rows)}</details></div>")
 
@@ -315,8 +319,8 @@ def render(ctx: Context, findings: List[Finding], title: Optional[str] = None) -
     counts = {s: sum(1 for f in findings if f.status == s) for s in (FAIL, REVIEW, PASS, INFO, SKIPPED)}
     name = title or ctx.project.name
     if counts[FAIL]:
-        verdict = ("fail", f"Not ready to submit: {counts[FAIL]} finding{'s' if counts[FAIL] != 1 else ''} a reviewer "
-                           f"would reject, {counts[REVIEW]} more to check or justify.")
+        verdict = ("fail", f"Not ready to submit: {counts[FAIL]} FAIL finding{'s' if counts[FAIL] != 1 else ''} "
+                           f"(issues a reviewer is likely to reject) and {counts[REVIEW]} more to check or justify.")
     elif counts[REVIEW]:
         verdict = ("review", f"No blocking issues found. {counts[REVIEW]} item{'s' if counts[REVIEW] != 1 else ''} "
                              f"likely to draw a review comment — check or document them.")
