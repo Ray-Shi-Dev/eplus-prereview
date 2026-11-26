@@ -617,7 +617,7 @@ def _diagnose(model: ModelRun, stats: UnmetStats, top_n: int) -> List[ZoneModeDi
 
 # ----------------------------------------------------------------------------------
 def _fmt(v: Optional[float]) -> str:
-    return "—" if v is None else (f"{v:.0f}" if abs(v - round(v)) < 1e-6 else f"{v:.2f}")
+    return "—" if v is None else f"{v:,.1f}"
 
 
 def _model_finding(model: ModelRun, stats: UnmetStats, edition: str) -> Finding:
@@ -640,16 +640,16 @@ def _model_finding(model: ModelRun, stats: UnmetStats, edition: str) -> Finding:
     if stats.union_hours is not None:
         if stats.union_hours > LIMIT:
             status = FAIL
-            msg = (f"{stats.union_hours} hours have at least one zone outside setpoint while occupied "
+            msg = (f"{_fmt(stats.union_hours)} hours have at least one zone outside setpoint while occupied "
                    f"(limit 300).")
         elif rs is not None and rs > LIMIT:
             status = REVIEW
-            msg = (f"The exact count is {stats.union_hours} h (within 300), but EnergyPlus's heating + cooling "
+            msg = (f"The exact count is {_fmt(stats.union_hours)} h (within 300), but EnergyPlus's heating + cooling "
                    f"total is {_fmt(rs)} h. Reviewers often read the summed figure; report the exact count "
                    f"with an explanation, or reduce unmet hours below 300 on both measures.")
         else:
             status = PASS
-            msg = f"{stats.union_hours} unmet load hours (exact count); heating + cooling total {_fmt(rs)} h."
+            msg = f"{_fmt(stats.union_hours)} unmet load hours (exact count); heating + cooling total {_fmt(rs)} h."
     else:
         hmax = max(stats.reported_heating or 0, stats.reported_cooling or 0)
         if hmax > LIMIT:

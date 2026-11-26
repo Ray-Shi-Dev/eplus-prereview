@@ -173,3 +173,22 @@ def test_reporting_tolerance(tmp_path):
     assert status(unmet.check(ctx(p, [b])), "UMLH-TOL").status == "PASS"
     p.idf = b.idf = Idf("OutputControl:ReportingTolerances, 2.0, 2.0;")
     assert status(unmet.check(ctx(p, [b])), "UMLH-TOL").status == "REVIEW"
+
+
+def test_plant_traversal_follows_heat_exchangers(tmp_path):
+    from prereview.sqlout import SqlResults
+    from prereview.topology import plants_serving
+    s = SynthSql(str(tmp_path / "t.sql"), hours=2)
+    rows = [("SEC", "Demand", "COIL:COOLING:WATER", "C1"), ("SEC", "Supply", "HEATEXCHANGER:FLUIDTOFLUID", "HX"),
+            ("PRI", "Demand", "HEATEXCHANGER:FLUIDTOFLUID", "HX"), ("PRI", "Supply", "CHILLER:ELECTRIC:EIR", "CH1"),
+            ("CW", "Demand", "CHILLER:ELECTRIC:EIR", "CH1"), ("CW", "Supply", "COOLINGTOWER:SINGLESPEED", "T1"),
+            ("HW", "Demand", "COIL:HEATING:WATER", "R1"), ("HW", "Supply", "BOILER:HOTWATER", "B1")]
+    for i, (loop, side, ctype, name) in enumerate(rows, start=1):
+        for col, val in (("Loop Name", loop), ("Side", side), ("Component Type", ctype), ("Component Name", name)):
+            s.tab("HVACTopology", "Plant Loop Component Arrangement", str(i), col, val)
+    sql = SqlResults(s.close())
+    loops, equipment = plants_serving(sql, {"c1"})
+    assert loops == ["SEC", "PRI", "CW"]
+    assert [e["name"] for e in equipment] == ["HX", "CH1"]
+    loops, equipment = plants_serving(sql, {"R1"})
+    assert loops == ["HW"] and [e["name"] for e in equipment] == ["B1"]
