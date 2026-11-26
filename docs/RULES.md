@@ -29,6 +29,7 @@ does not set off a cascade of findings.
 | UMLH-300 | Hours with any zone unmet while occupied (exact, from facility timestep output), per model | FAIL > 300. REVIEW when the exact count is ≤ 300 but EnergyPlus's heating + cooling total is > 300. Without timestep output: FAIL when heating or cooling alone is > 300, REVIEW when only their sum is > 300. |
 | UMLH-50 | Proposed minus baseline (average of the submitted orientations) | FAIL > 50 h (90.1-2010; REVIEW under 2016). REVIEW when within 50 h of the average but > 50 h above one orientation. A baseline higher than the proposed is allowed. |
 | SIZE-DD | Design days are for the weather-file location; under 2010, the baseline uses 99.6% heating and 1% cooling | FAIL for another location; REVIEW for a different percentile |
+| UMLH-TOL | `OutputControl:ReportingTolerances` is the same in every model | FAIL when models differ; REVIEW above 1.11 K (2 °F) |
 
 The diagnosis (top 6 zone/mode pairs) is attached to UMLH-300 and shown in the report. The cause categories
 are listed in the README.

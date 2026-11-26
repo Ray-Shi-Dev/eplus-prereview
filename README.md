@@ -66,7 +66,7 @@ building, HVAC, schedules or simulation settings. It adds:
   equipment, VAV damper position, and outdoor dry-bulb and wet-bulb temperature.
 - Facility unmet time at the zone timestep, which gives the exact count of hours with any zone unmet.
 - `Schedule Value` for the schedules that loads, thermostats and HVAC availability refer to.
-- Supply-outlet node temperature and setpoint for each air loop.
+- Node temperature and setpoint at each air loop's supply outlet and each plant loop's setpoint node.
 
 `prereview check` also works on runs that lack these outputs. When it uses less exact data, the report says
 so: for example, it judges unmet hours on EnergyPlus's heating + cooling total instead of the exact count.
@@ -87,8 +87,9 @@ For the zones that contribute most, the diagnosis uses hourly data to show why e
 |---|---|
 | No heating/cooling delivered | the zone's peak delivered heating/cooling is near zero or < 10% of its design load |
 | System off while occupied | no delivery during most unmet hours, even though the system delivers at other times |
-| Hard-sized below design | a capacity or flow field on equipment serving the zone is user-specified below EnergyPlus's design size (ComponentSizes) |
+| Hard-sized below design | a capacity or flow field of equipment serving the zone (coils, terminals, unitary systems, chillers, boilers) is user-specified below EnergyPlus's design size (ComponentSizes), or below the zone design load when no design size is reported |
 | Coil can't hold supply-air setpoint | the air loop's supply-outlet temperature misses its setpoint during the unmet hours |
+| Plant can't hold supply-water setpoint | the chilled- or hot-water loop serving the zone's coils (followed through heat exchangers) misses its setpoint |
 | Terminal at maximum airflow | the VAV damper is fully open; also notes when the zone was sized for a colder supply-air temperature than the system supplies |
 | Weather beyond design day | outdoor dry-bulb or wet-bulb is beyond the sizing design day during the unmet hours |
 | Morning recovery | most unmet hours fall in the first two occupied hours of the day |
