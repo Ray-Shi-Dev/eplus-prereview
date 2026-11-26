@@ -65,13 +65,18 @@ class Context:
 
     @property
     def simulated(self) -> List[ModelRun]:
-        """Models that produced results (a run that stopped early has only its .err file)."""
-        return [m for m in self.models if m.sql is not None]
+        """Models that ran to completion and produced results (a run that stopped early is only
+        reviewed for simulation health)."""
+        return [m for m in self.models if m.sql is not None and m.completed]
 
     @property
     def pair_ready(self) -> bool:
-        return (self.proposed is not None and self.proposed.sql is not None
-                and any(b.sql is not None for b in self.baselines))
+        ok = self.simulated
+        return self.proposed is not None and self.proposed in ok and any(b in ok for b in self.baselines)
+
+    def complete_baselines(self) -> List[ModelRun]:
+        ok = self.simulated
+        return [b for b in self.baselines if b in ok]
 
     @property
     def edition(self) -> str:

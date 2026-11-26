@@ -126,7 +126,7 @@ def _wwr_findings(ctx: Context) -> List[Finding]:
         btot = bw.get("Above Ground Window-Wall Ratio", {}).get("Total")
         if btot is None:
             continue
-        ok = abs(btot - target) <= 1.0
+        ok = abs(btot - target) <= 0.5
         bad |= not ok
         row = {"Baseline run": b.label, "Proposed WWR": f"{ptot:.1f}%", "Required baseline WWR": f"{target:.1f}%",
                "Baseline WWR": f"{btot:.1f}%", "OK": "yes" if ok else "NO"}
@@ -383,7 +383,7 @@ def _process_share(ctx: Context) -> Optional[Finding]:
 def check(ctx: Context) -> List[Finding]:
     if not ctx.pair_ready:
         return []
-    ctx = Context(ctx.proposed, [b for b in ctx.baselines if b.sql is not None], ctx.project)
+    ctx = Context(ctx.proposed, ctx.complete_baselines(), ctx.project)
     out = [_orientation_finding(ctx)]
     out.extend(_wwr_findings(ctx))
     out.extend(_skylight_findings(ctx))

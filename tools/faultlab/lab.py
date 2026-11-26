@@ -101,8 +101,9 @@ CLG_25 = ["Through: 12/31", "For: Weekdays SummerDesignDay", "Until: 06:00", "29
           "Until: 24:00", "29.44", "For: Saturday", "Until: 06:00", "29.44", "Until: 18:00", "25.0",
           "Until: 24:00", "29.44", "For: WinterDesignDay", "Until: 24:00", "29.44", "For: AllOtherDays",
           "Until: 24:00", "29.44"]
-CLG_DEEP_SETUP = ["Through: 12/31", "For: Weekdays SummerDesignDay", "Until: 08:00", "40.0", "Until: 18:00",
-                  "24.0", "Until: 24:00", "40.0", "For: AllOtherDays", "Until: 24:00", "40.0"]
+CLG_DEEP_SETUP = ["Through: 12/31", "For: Weekdays", "Until: 06:00", "40.0", "Until: 18:00", "23.89",
+                  "Until: 24:00", "40.0", "For: SummerDesignDay", "Until: 24:00", "23.89",
+                  "For: AllOtherDays", "Until: 24:00", "40.0"]
 HVAC_8_18 = ["Through: 12/31", "For: Weekdays SummerDesignDay WinterDesignDay", "Until: 08:00", "0",
              "Until: 18:00", "1", "Until: 24:00", "0", "For: AllOtherDays", "Until: 24:00", "0"]
 HTG_DEEP_SETBACK = ["Through: 12/31", "For: Weekdays", "Until: 06:00", "12.0", "Until: 22:00", "21.0",
@@ -158,7 +159,7 @@ def faults() -> List[Fault]:
               [Expect("HEALTH-RUN", "FAIL", P)]),
         Fault("F05", "OS", P, "Warm-up limited to 1 day (no convergence)", lambda m, x: M.set_field(
             M.set_field(m, "Building", m.first("Building").name, 6, "1"), "Building", m.first("Building").name,
-            7, "1"), [Expect("HEALTH-WARN", "REVIEW", P)]),
+            7, "1"), [Expect("HEALTH-SEVERE", "FAIL", P)]),
         Fault("F06", "OS", P, "Design days from another climate (Denver) with Taipei weather",
               lambda m, x: _denver_design_days(m, x["proto"]),
               [Expect("SIZE-DD", "FAIL", P), Expect("UMLH-300", "FAIL", P, cause="beyond_design_day")]),
@@ -175,17 +176,22 @@ def faults() -> List[Fault]:
               lambda m, x: M.set_field_all(_replace_schedule(m, "HVACOperationSchd", "On/Off", OCC_START_LATE),
                                            "AvailabilityManager:NightCycle", 3, "StayOff"),
               [Expect("UMLH-300", "FAIL", P, cause="system_off"), Expect("CONS-HVAC-SCHED", "FAIL")]),
-        Fault("F10", "OS", P, "Deep cooling setup at night, HVAC starts at occupancy",
-              lambda m, x: M.set_field_all(_replace_schedule(_replace_schedule(
-                  m, "CLGSETP_SCH_NO_OPTIMUM", "Temperature", CLG_DEEP_SETUP), "HVACOperationSchd", "On/Off",
-                  HVAC_8_18), "AvailabilityManager:NightCycle", 3, "StayOff"),
-              [Expect("UMLH-300", "FAIL", P, cause="morning_recovery"), Expect("CONS-TSTAT-CLG", "FAIL")]),
-        Fault("F11", "OM", P, "Zone design airflow too low (cooling supply air 18 °C, Perimeter_bot_ZN_1)",
-              lambda m, x: M.set_field(m, "Sizing:Zone", "Perimeter_bot_ZN_1", 2, "18.0"),
+        Fault("F10", "OS", P, "No night cycling and 40 °C setup: HVAC starts at occupancy into a hot building",
+              lambda m, x: M.set_field_all(_replace_schedule(
+                  m, "CLGSETP_SCH_NO_OPTIMUM", "Temperature", CLG_DEEP_SETUP),
+                  "AvailabilityManager:NightCycle", 3, "StayOff"),
+              # mild on purpose: total stays under 300 h, but the diagnosis must still name the cause
+              [Expect("UMLH-300", "PASS", P, cause="morning_recovery"), Expect("CONS-TSTAT-CLG", "FAIL")]),
+        Fault("F32", "OS", P, "Cooling sized with no margin (sizing factor 1.0) in a humid climate",
+              lambda m, x: m.set_field(m.by_class("Sizing:Parameters")[0], 1, "1.0"),
+              [Expect("UMLH-300", "FAIL", P, cause="supply_air_not_at_setpoint")]),
+        Fault("F11", "OM", P, "Zone airflow sized for 6 °C supply air while the system supplies 12.8 °C "
+              "(Perimeter_bot_ZN_1)",
+              lambda m, x: M.set_field(m, "Sizing:Zone", "Perimeter_bot_ZN_1", 2, "6.0"),
               [Expect("UMLH-300", "FAIL", P, zone="PERIMETER_BOT_ZN_1", cause="terminal_at_max_airflow")]),
-        Fault("F12", "OS", P, "Proposed coil at 70% (Core_ZN): within 300 but > baseline + 50",
-              lambda m, x: _set_cooling_capacity(m, OS_COIL1, 0.7 * _design_size(x, OS_COIL1, cap)),
-              [Expect("UMLH-50", "FAIL")]),
+        Fault("F12", "OS", P, "Proposed coil at 90% (Core_ZN): within 300 but > baseline + 50",
+              lambda m, x: _set_cooling_capacity(m, OS_COIL1, 0.9 * _design_size(x, OS_COIL1, cap)),
+              [Expect("UMLH-50", "FAIL"), Expect("UMLH-300", "PASS", P)]),
         Fault("F13", "OS", B0, "Baseline coil hard-sized at 50% (Perimeter_ZN_1)",
               lambda m, x: _set_cooling_capacity(m, OS_COIL2, 0.5 * _design_size(x, OS_COIL2, cap)),
               [Expect("UMLH-300", "FAIL", B0, zone="PERIMETER_ZN_1", cause="hard_sized_below_design")]),

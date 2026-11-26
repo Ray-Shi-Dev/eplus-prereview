@@ -68,6 +68,12 @@ KB: List[KbEntry] = [
             ["Check the window/door vertices against the parent surface; remove duplicated or overlapping glazing.",
              "If the WWR was scaled, scale windows about their own centroid so they stay inside the wall."],
             stage="input"),
+    KbEntry("E-WIN-MULT", r"Multiplier > 1\.0 for window|window multiplier.*daylight",
+            "Window multiplier in a daylit zone",
+            "A window with a multiplier greater than 1 is in a zone with daylighting controls (or the multiplier "
+            "makes openings exceed the wall). Daylighting needs each window modeled explicitly.",
+            ["Set the window multiplier to 1 and model each window as its own surface, or remove daylighting "
+             "controls from the zone."], stage="input"),
     KbEntry("E-ZERO-AREA", r"(zero or negative (surface )?area|degenerate|collinear|less than 3 vertices|"
             r"distance between two vertices)",
             "Degenerate surface geometry",
@@ -139,6 +145,13 @@ KB: List[KbEntry] = [
             "extrapolated. Simulation results are unaffected.",
             ["No action needed for compliance; do not quote the reported SEER/EER as the rated efficiency."],
             status="INFO", stage="sizing"),
+    KbEntry("W-CURVE-RATED", r"curve values.*(output is not equal to 1\.0|not equal to 1\.0 \(\+ or - 10%\))|"
+            r"Curve output at rated conditions",
+            "Performance curve not normalised at rated conditions",
+            "A coil performance curve does not return 1.0 at rated conditions, so the coil's capacity or efficiency "
+            "at rated conditions differs from the rated input. Common with curves copied from other equipment.",
+            ["Use curves normalised to 1.0 at the rated point (e.g. from the EnergyPlus datasets), or confirm the "
+             "effective rated performance matches the equipment schedule."], status="INFO", stage="sizing"),
     KbEntry("W-PLANT-SIZING", r"For a plant sizing run, there must be at least",
             "Plant sizing requested without Sizing:Plant",
             "SimulationControl asks for plant sizing but there is no Sizing:Plant object, so the option is ignored.",
@@ -184,7 +197,7 @@ KB: List[KbEntry] = [
             "capacity and still short of the load, or controls are fighting.",
             ["Compare the coil capacity with the zone/system load in those hours; check controller tolerances."],
             status="INFO", stage="simulation"),
-    KbEntry("S-COIL-FREEZE", r"(outlet air (dry-bulb )?temperature.*(below|<).*(freez|2(\.0)? ?C))|frost",
+    KbEntry("S-COIL-FREEZE", r"outlet air (dry-bulb )?temperature[^.]*(below|<)[^.]*(freez|2(\.0)? ?C)",
             "DX coil outlet air near freezing",
             "The DX coil's outlet air is below about 2 °C at full load, which means too little airflow for its "
             "capacity. Real equipment would ice; the simulated capacity is optimistic.",

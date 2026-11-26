@@ -87,10 +87,23 @@ def _fmt(v: Optional[float], nd: int = 1) -> str:
     return f"{v:,.{nd}f}"
 
 
+def _comparable(ctx: Context) -> Optional[str]:
+    """Reason hourly comparisons are meaningless (different run lengths), else None."""
+    n = len(ctx.proposed.sql.time_stamps())
+    for b in ctx.baselines:
+        if len(b.sql.time_stamps()) != n:
+            return (f"not compared hour by hour: {b.label} simulated {len(b.sql.time_stamps())} hours and the "
+                    f"proposed {n} (see CONS-SITE)")
+    return None
+
+
 def _series_check(ctx: Context, rule_id: str, title: str, var: str, clause: str, unit: str,
                   rel: float, abs_tol: float, status_on_diff: str, scale: float = 1.0, agg: str = "sum",
                   what: str = "", fixes: Optional[List[str]] = None) -> Finding:
     p = ctx.proposed
+    why = _comparable(ctx)
+    if why:
+        return Finding(rule_id, title, SKIPPED, f"{what or var}: {why}.", clause=clause)
     rows: List[Dict[str, str]] = []
     objs: List[str] = []
     compared = 0
@@ -249,6 +262,8 @@ def _infiltration(ctx: Context) -> Finding:
             issue = ""
             if max(x, y) > 0 and abs(x - y) / max(x, y) > 0.01:
                 issue = f"design flow {x:.4g} vs {y:.4g} m³/s"
+            elif _comparable(ctx):
+                pass
             else:
                 for sp, sb in zip(sorted(psched.get(pk, [])), sorted(bsched.get(bk, []))):
                     a, c = pser.get(sp), bser.get(sb)
@@ -276,6 +291,9 @@ def _infiltration(ctx: Context) -> Finding:
 
 def _lighting_schedules(ctx: Context) -> Finding:
     p = ctx.proposed
+    if _comparable(ctx):
+        return Finding("CONS-LSCHED", "Lighting schedules the same", SKIPPED, f"Lighting schedules "
+                       f"{_comparable(ctx)}.", clause=CL_LIGHT)
     psched = _nominal_schedules(p, "NominalLighting")
     if not psched:
         return Finding("CONS-LSCHED", "Lighting schedules the same", SKIPPED, "No lighting objects found.",
@@ -378,6 +396,9 @@ def _end_use_equipment(ctx: Context) -> Optional[Finding]:
     p = eq(ctx.proposed)
     if p is None:
         return None
+    if _comparable(ctx):
+        return Finding("CONS-EQUIP-TOTAL", "Interior equipment energy the same", SKIPPED,
+                       f"Annual equipment energy {_comparable(ctx)}.", clause=CL_PLUG)
     rows = []
     for b in ctx.baselines:
         v = eq(b)
@@ -441,6 +462,10 @@ def _zone_operation_schedules(model: ModelRun) -> Dict[str, str]:
 
 def _hvac_operation(ctx: Context) -> Finding:
     p = ctx.proposed
+    why = _comparable(ctx)
+    if why:
+        return Finding("CONS-HVAC-SCHED", "HVAC operation schedules the same", SKIPPED, f"HVAC schedules {why}.",
+                       clause=CL_HVAC)
     pz = _zone_operation_schedules(p)
     if not pz:
         return Finding("CONS-HVAC-SCHED", "HVAC operation schedules the same", SKIPPED,
@@ -487,7 +512,7 @@ def _hvac_operation(ctx: Context) -> Finding:
 def check(ctx: Context) -> List[Finding]:
     if not ctx.pair_ready:
         return []
-    ctx = Context(ctx.proposed, [b for b in ctx.baselines if b.sql is not None], ctx.project)
+    ctx = Context(ctx.proposed, ctx.complete_baselines(), ctx.project)
     out = [_site(ctx), _zones(ctx)]
     out.append(_series_check(
         ctx, "CONS-PEOPLE", "Occupancy the same", V_PEOPLE, CL_PEOPLE, "person-h", 0.01, 0.01, FAIL,

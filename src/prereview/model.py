@@ -79,6 +79,16 @@ class ModelRun:
     def has_results(self) -> bool:
         return self.sql is not None
 
+    @property
+    def completed(self) -> bool:
+        """Did EnergyPlus finish? The .err summary line is authoritative (some versions leave the SQL
+        Simulations.CompletedSuccessfully flag FALSE even after a clean run)."""
+        if self.err is not None and self.err.warnings_total is not None:
+            return self.err.completed and not self.err.fatal
+        if self.sql is not None:
+            return bool(self.sql.completed_successfully()) or bool(self.sql.general())
+        return False
+
     # Convenience accessors used by several rules ---------------------------------
     def general(self) -> Dict[str, str]:
         return self.sql.general() if self.sql is not None else {}

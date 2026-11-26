@@ -35,14 +35,7 @@ def _first_text(msgs: List[ErrMessage]) -> str:
 def check_model(model: ModelRun) -> List[Finding]:
     out: List[Finding] = []
     err = model.err
-    # The .err summary line is the reliable completion signal: EnergyPlus leaves the SQL
-    # Simulations.CompletedSuccessfully flag FALSE in some versions even after a clean run.
-    if err is not None and err.warnings_total is not None:
-        completed = err.completed and not err.fatal
-    elif model.sql is not None:
-        completed = bool(model.sql.completed_successfully()) or bool(model.sql.general())
-    else:
-        completed = False
+    completed = model.completed
     if not completed:
         fatal_msgs = [m for m in (err.messages if err else []) if m.level in ("Fatal", "Severe")]
         fixes, explain = [], ""
@@ -51,9 +44,12 @@ def check_model(model: ModelRun) -> List[Finding]:
             if kb is not None:
                 explain = explain or kb.meaning
                 fixes.extend(f for f in kb.fixes if f not in fixes)
+        crashed = err is not None and err.warnings_total is None
+        lead = ("EnergyPlus stopped without writing its final summary (it crashed or was killed) — the last "
+                "messages usually point at the cause. " if crashed else "EnergyPlus did not complete this run. ")
         out.append(Finding(
             "HEALTH-RUN", "Simulation completed", FAIL,
-            "EnergyPlus did not complete this run. " + (explain or "See the severe/fatal messages below."),
+            lead + (explain or "See the severe/fatal messages below."),
             model=model.label, clause=CLAUSE_RUN,
             evidence=[{"Level": m.level, "Message": (m.text + " " + " ".join(m.details[:2]))[:300]}
                       for m in fatal_msgs[:8]],

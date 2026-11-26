@@ -86,18 +86,20 @@ CAUSE_FIXES = {
         "Make the same change in both models so the comparison stays fair.",
     ],
     HARD_SIZED: [
-        "Autosize the component, or raise the user-specified value to at least the design size.",
-        "In the baseline, capacities must come from the sizing run (Appendix G equipment capacities); "
-        "hard-sized baseline components below the sizing result are a common review comment.",
-        "In the proposed model, keep the design-schedule values but check the schedule itself if the zone "
-        "cannot be held at setpoint.",
+        "[baseline] Autosize the component: baseline capacities must come from the sizing run (Appendix G "
+        "equipment capacities, oversized 15% cooling / 25% heating). Hard-sized baseline equipment below the "
+        "sizing result is a common review comment.",
+        "[proposed] If this value is a leftover from an earlier option, autosize it or enter the capacity on the "
+        "design drawings/schedules.",
+        "[proposed] If it is the as-designed capacity, the design cannot hold this zone at setpoint: raise it "
+        "with the design team, or document why the unmet hours are acceptable.",
     ],
     COIL_LIMITED: [
         "Check the {mode} coil capacity of the air system serving the zone against its peak load; "
         "check sizing factors and the system sizing method (coincident vs non-coincident).",
         "For DX cooling in hot-humid climates, check the coil's sensible heat ratio and rated capacity at the "
         "design wet-bulb; latent load can use up capacity the sensible load needs.",
-        "In the baseline, capacities must come from the sizing run, oversized 15% (cooling) / 25% (heating).",
+        "[baseline] Baseline capacities must come from the sizing run, oversized 15% (cooling) / 25% (heating).",
     ],
     AIRFLOW_LIMITED: [
         "Raise the zone design airflow: check Sizing:Zone supply-air temperature (or temperature difference), "
@@ -109,7 +111,8 @@ CAUSE_FIXES = {
         "requires (90.1-2010 baseline sizing: 99.6% heating, 1% cooling dry-bulb and wet-bulb).",
         "In hot-humid climates DX coils lose sensible capacity at high wet-bulb; compare the coil's sensible "
         "capacity with the zone's peak sensible load.",
-        "Baseline capacities are oversized 15% for cooling and 25% for heating; confirm the sizing factors.",
+        "[baseline] Baseline capacities are oversized 15% for cooling and 25% for heating; confirm the sizing "
+        "factors.",
     ],
     AT_CAPACITY: [
         "Check zone and system sizing factors, the zone design supply-air temperature difference and the "
@@ -338,6 +341,21 @@ def compute(model: ModelRun, diagnose: bool = True, top_n: int = 6) -> UnmetStat
     return stats
 
 
+def _zone_sizing_supply_temps(model: ModelRun) -> Dict[Tuple[str, str], float]:
+    """(zone upper, mode) -> design supply air temperature from Sizing:Zone, when specified that way."""
+    out: Dict[Tuple[str, str], float] = {}
+    if model.idf is None:
+        return out
+    for o in model.idf.by_class("Sizing:Zone"):
+        for mode, i_method, i_val in (("cooling", 1, 2), ("heating", 4, 5)):
+            if o.get(i_method).strip().upper() == "SUPPLYAIRTEMPERATURE":
+                try:
+                    out[(o.name.upper(), mode)] = float(o.get(i_val))
+                except ValueError:
+                    pass
+    return out
+
+
 def _loop_outlet_nodes(model: ModelRun) -> Dict[str, str]:
     """Air loop name (upper) -> supply outlet node name, from the IDF when available."""
     out: Dict[str, str] = {}
@@ -369,6 +387,11 @@ def _diagnose(model: ModelRun, stats: UnmetStats, top_n: int) -> List[ZoneModeDi
     services = zone_services(s)
     loops = air_loop_components(s)
     outlets = _loop_outlet_nodes(model)
+    design_load = {}
+    for zs in s.zone_sizes():
+        k = (zs["zone"].upper(), (zs["load_type"] or "").lower())
+        design_load[k] = max(design_load.get(k, 0.0), float(zs["user_load"] or zs["calc_load"] or 0.0))
+    zone_sizing_sat = _zone_sizing_supply_temps(model)
 
     items: List[Tuple[str, str, List[float]]] = []
     for z, series in h.items():
@@ -390,10 +413,12 @@ def _diagnose(model: ModelRun, stats: UnmetStats, top_n: int) -> List[ZoneModeDi
         svc = services.get(z.upper())
         counts: Counter = Counter()
         qmax = max(q) if q else 0.0
+        dload = design_load.get((z.upper(), mode), 0.0)
+        never = qmax <= 1.0 or (dload > 0 and qmax < 0.1 * dload)
         for i in idx:
             if q is None:
                 counts["unknown"] += 1
-            elif qmax <= 1.0:
+            elif never:
                 counts[NO_DELIVERY] += 1
             elif q[i] <= max(1.0, 0.01 * qmax):
                 counts[SYSTEM_OFF] += 1
@@ -413,6 +438,7 @@ def _diagnose(model: ModelRun, stats: UnmetStats, top_n: int) -> List[ZoneModeDi
                 damper_max = max(damper_max, sum(1 for i in idx if dp[i] >= 0.98))
         sat_miss = 0
         sat_desc = ""
+        sys_sp_unmet: List[float] = []
         for loop in sorted(svc.air_loops) if svc else []:
             node = outlets.get(loop.upper())
             cand = [node.upper()] if node else [k for k in node_t if loop.upper() in k]
@@ -420,6 +446,7 @@ def _diagnose(model: ModelRun, stats: UnmetStats, top_n: int) -> List[ZoneModeDi
                 tt, ss = node_t.get(nk), node_sp.get(nk)
                 if not tt or not ss:
                     continue
+                sys_sp_unmet = [ss[i] for i in idx if ss[i] > -50]
                 if mode == "cooling":
                     n = sum(1 for i in idx if ss[i] > -50 and tt[i] > ss[i] + 0.5)
                 else:
@@ -501,6 +528,14 @@ def _diagnose(model: ModelRun, stats: UnmetStats, top_n: int) -> List[ZoneModeDi
                 ev.append(f"{d.counts[key] / n_idx:.0%} of those hours {label}.")
         if d.mean_miss_k is not None:
             ev.append(f"Average miss: {d.mean_miss_k:.2f} K from the {mode} setpoint.")
+        zsat = zone_sizing_sat.get((z.upper(), mode))
+        if zsat is not None and sys_sp_unmet and mode == "cooling":
+            sys_sat = sum(sys_sp_unmet) / len(sys_sp_unmet)
+            if zsat < sys_sat - 1.0:
+                ev.append(f"Zone airflow was sized for {zsat:.1f} °C supply air (Sizing:Zone), but the system "
+                          f"supplies {sys_sat:.1f} °C — the zone's design airflow is too small for the air it gets.")
+                if d.cause in (AT_CAPACITY, PARTIAL, MARGINAL) or frac(AIRFLOW_LIMITED) >= 0.3:
+                    d.cause = AIRFLOW_LIMITED
         for hz in hard[:3]:
             ev.append(f"{hz['type']} “{hz['component']}”: {hz['field']} user-specified "
                       f"{hz['user']:.4g} {hz['units']} vs design size {hz['design']:.4g} ({hz['ratio']:.0%}).")
@@ -559,13 +594,36 @@ def _model_finding(model: ModelRun, stats: UnmetStats, edition: str) -> Finding:
             msg = f"Heating + cooling unmet hours total {_fmt(rs)} h (≤ 300)."
     if stats.diagnosis and status != PASS:
         top = stats.diagnosis[0]
-        msg += f" Main contributor: {top.zone} ({top.mode}) — {CAUSE_TEXT[top.cause].format(mode=top.mode)}"
+        msg += f" Main contributor: {top.zone} ({top.mode}, {top.hours:.0f} h) — " \
+               f"{CAUSE_TEXT[top.cause].format(mode=top.mode)}"
+        if top.cause == HARD_SIZED and top.hard_sizing:
+            hz = top.hard_sizing[0]
+            msg += (f" {hz['type']} “{hz['component']}” {hz['field']} is {hz['user']:,.4g} {hz['units']}, "
+                    f"{hz['ratio']:.0%} of its design size ({hz['design']:,.4g}).")
+        others = [d for d in stats.diagnosis[1:] if d.share >= 0.1]
+        if others:
+            msg += " Also: " + "; ".join(f"{d.zone} ({d.mode}, {d.hours:.0f} h, "
+                                         f"{CAUSE_TEXT[d.cause].format(mode=d.mode).rstrip('.').lower()})"
+                                         for d in others[:3]) + "."
         seen = set()
-        for dg in stats.diagnosis:
+        for dg in [top] + others:
             objects.append(dg.zone)
             if dg.cause not in seen:
                 seen.add(dg.cause)
-                fixes.extend(f.format(mode=dg.mode) for f in CAUSE_FIXES[dg.cause])
+                for fx in CAUSE_FIXES[dg.cause]:
+                    fx = fx.format(mode=dg.mode)
+                    if fx.startswith("[") and "] " in fx:
+                        role, fx = fx[1:].split("] ", 1)
+                        if role != model.role:
+                            continue
+                    if fx not in fixes:
+                        fixes.append(fx)
+        for dg in stats.diagnosis:
+            if dg.zone not in objects:
+                objects.append(dg.zone)
+        for hz in top.hard_sizing[:3]:
+            if hz["component"] not in objects:
+                objects.append(hz["component"])
     elif status != PASS and not stats.hourly:
         fixes.append("Rerun the model with `prereview run` so hourly output is available for the diagnosis.")
         objects = [z for z, _, _ in stats.zone_hours[:5]]
