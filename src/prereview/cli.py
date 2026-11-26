@@ -131,6 +131,11 @@ def cmd_check(a: argparse.Namespace) -> int:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    for stream in (sys.stdout, sys.stderr):  # Windows consoles/pipes may not encode "≤", "°", "—"
+        try:
+            stream.reconfigure(errors="replace")  # type: ignore[attr-defined]
+        except (AttributeError, ValueError):
+            pass
     ap = argparse.ArgumentParser(prog="prereview", description="Find what an Appendix G / LEED reviewer would "
                                  "flag in EnergyPlus models, before you submit.")
     ap.add_argument("--version", action="version", version=f"prereview {__version__}")

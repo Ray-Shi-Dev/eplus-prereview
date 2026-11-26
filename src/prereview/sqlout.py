@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+from pathlib import Path
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -50,7 +51,8 @@ class SqlResults:
         if not os.path.isfile(path):
             raise FileNotFoundError(path)
         self.path = path
-        self.con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        # read-only URI; as_uri() also handles Windows drive letters, spaces, '#' and '?' in paths
+        self.con = sqlite3.connect(Path(os.path.abspath(path)).as_uri() + "?mode=ro", uri=True)
         self._cache: Dict[str, object] = {}
         self._tables = {
             r[0].lower()

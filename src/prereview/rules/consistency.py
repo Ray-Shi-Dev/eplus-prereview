@@ -99,8 +99,12 @@ def _comparable(ctx: Context) -> Optional[str]:
 
 def _series_check(ctx: Context, rule_id: str, title: str, var: str, clause: str, unit: str,
                   rel: float, abs_tol: float, status_on_diff: str, scale: float = 1.0, agg: str = "sum",
-                  what: str = "", fixes: Optional[List[str]] = None) -> Finding:
+                  what: str = "", fixes: Optional[List[str]] = None, nominal: Optional[str] = None) -> Finding:
     p = ctx.proposed
+    if nominal and all(m.sql.has_table(nominal) and not m.sql.q(f"select 1 from {nominal} limit 1")
+                       for m in [p] + ctx.baselines):
+        noun = {"NominalGasEquipment": "GasEquipment", "NominalOtherEquipment": "OtherEquipment"}.get(nominal, nominal)
+        return Finding(rule_id, title, PASS, f"No {noun} objects in any model.", clause=clause)
     why = _comparable(ctx)
     if why:
         return Finding(rule_id, title, SKIPPED, f"{what or var}: {why}.", clause=clause)
@@ -526,11 +530,11 @@ def check(ctx: Context) -> List[Finding]:
                "equipment), documented separately."]))
     out.append(_series_check(
         ctx, "CONS-GAS-EQUIP", "Gas equipment the same", V_GAS, CL_PLUG, "kWh", 0.01, 1.0, FAIL, scale=1 / 1000.0,
-        what="Gas equipment power (level × schedule)",
+        what="Gas equipment power (level × schedule)", nominal="NominalGasEquipment",
         fixes=["Use identical GasEquipment objects and schedules in both models."]))
     out.append(_series_check(
         ctx, "CONS-OTHER-EQUIP", "Other equipment the same", V_OTHER, CL_PLUG, "kWh", 0.01, 1.0, FAIL,
-        scale=1 / 1000.0, what="Other equipment heat gain",
+        scale=1 / 1000.0, what="Other equipment heat gain", nominal="NominalOtherEquipment",
         fixes=["Use identical OtherEquipment objects and schedules in both models."]))
     out.append(_series_check(
         ctx, "CONS-TSTAT-HTG", "Heating setpoints the same", V_SPH, CL_TSTAT, "°C", 0.0, 0.05, FAIL, agg="max",
