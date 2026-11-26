@@ -251,6 +251,10 @@ def _relevant_component(ctype: str, mode: str) -> bool:
 def _hard_sizing_for_zone(model: ModelRun, zone: str, mode: str, services, loops) -> List[Dict[str, object]]:
     """Components serving the zone whose user-specified capacity or flow is below the design size."""
     zone_u = zone.upper()
+    n_zones: Dict[str, int] = defaultdict(int)
+    for zsvc in services.values():
+        for loop in zsvc.air_loops:
+            n_zones[loop.upper()] += 1
     svc = services.get(zone_u)
     names = set()
     if svc is not None:
@@ -264,6 +268,11 @@ def _hard_sizing_for_zone(model: ModelRun, zone: str, mode: str, services, loops
         if cname in names or (zone_u and zone_u in cname):
             by_comp[(row["type"], row["name"])][row["desc"]] = (row["value"], row["units"])
     found = []
+    single_zone = svc is not None and all(n_zones.get(loop.upper(), 0) <= 1 for loop in svc.air_loops)
+    zone_load = 0.0
+    for zs in model.sql.zone_sizes():
+        if zs["zone"].upper() == zone_u and (zs["load_type"] or "").lower() == mode:
+            zone_load = max(zone_load, float(zs["user_load"] or zs["calc_load"] or 0.0))
     for (ctype, cname), descs in by_comp.items():
         if not _relevant_component(ctype, mode):
             continue
@@ -274,12 +283,20 @@ def _hard_sizing_for_zone(model: ModelRun, zone: str, mode: str, services, loops
             if not _relevant_field(base, mode):
                 continue
             dval = descs.get("Design Size " + base, (None, None))[0]
-            if uval is None or dval is None or not dval or uval <= 0:
+            if uval is None or uval <= 0:
                 continue
-            ratio = uval / dval
-            if ratio < 0.97:
-                found.append({"component": cname, "type": ctype, "field": base, "user": uval,
-                              "design": dval, "units": units, "ratio": ratio})
+            if dval:
+                ratio = uval / dval
+                if ratio < 0.97:
+                    found.append({"component": cname, "type": ctype, "field": base, "user": uval,
+                                  "design": dval, "units": units, "ratio": ratio})
+            elif single_zone and zone_load > 0 and (units or "").upper() == "W" and "capacity" in base.lower():
+                # EnergyPlus reports no design size for some hard-sized coils: compare with the
+                # design load of the only zone the system serves
+                ratio = uval / zone_load
+                if ratio < 0.8:
+                    found.append({"component": cname, "type": ctype, "field": base + " (vs zone design load)",
+                                  "user": uval, "design": zone_load, "units": units, "ratio": ratio})
     # zone-level sizing: user design load/airflow below the calculated value (zone sizing factor < 1)
     for zs in model.sql.zone_sizes():
         if zs["zone"].upper() != zone_u or (zs["load_type"] or "").lower() != mode:
@@ -500,6 +517,10 @@ def _diagnose(model: ModelRun, stats: UnmetStats, top_n: int) -> List[ZoneModeDi
             d.cause = SYSTEM_OFF
         elif hard and (limited or frac(PARTIAL) >= 0.5):
             d.cause = HARD_SIZED
+        elif limited and frac(DESIGN_BASIS) >= 0.75:
+            # most unmet hours are colder/hotter than the sizing design day: the design day is the root
+            # cause even if the misses show up during morning recovery
+            d.cause = DESIGN_BASIS
         elif frac(RECOVERY) >= 0.6:
             d.cause = RECOVERY
         elif limited and frac(DESIGN_BASIS) >= 0.5:
@@ -680,9 +701,55 @@ def _design_day_findings(model: ModelRun, edition: str) -> List[Finding]:
     return out
 
 
+def _tolerances(model: ModelRun) -> Optional[Tuple[float, float]]:
+    """(heating, cooling) not-met reporting tolerance in K from the run's IDF; EnergyPlus default 0.2."""
+    if model.idf is None:
+        return None
+    o = model.idf.first("OutputControl:ReportingTolerances")
+    vals = []
+    for i in (0, 1):
+        try:
+            vals.append(float(o.get(i)) if o is not None and o.get(i).strip() else 0.2)
+        except ValueError:
+            vals.append(0.2)
+    return vals[0], vals[1]
+
+
+def _tolerance_finding(ctx: Context) -> Optional[Finding]:
+    rows, tols = [], {}
+    for m in ctx.simulated:
+        t = _tolerances(m)
+        if t is None:
+            continue
+        tols[m.label] = t
+        rows.append({"Model": m.label, "Heating tolerance (K)": f"{t[0]:.2f}", "Cooling tolerance (K)": f"{t[1]:.2f}"})
+    if not tols:
+        return None
+    clause = "Unmet load hour definition — outside setpoint ± half the throttling range (OutputControl:ReportingTolerances)"
+    distinct = {v for v in tols.values()}
+    if len(distinct) > 1:
+        return Finding("UMLH-TOL", "Same unmet-hour reporting tolerance in every model", FAIL,
+                       "The models count unmet hours with different tolerances, so their unmet hours are not "
+                       "comparable.", clause=clause, evidence=rows,
+                       fixes=["Use the same OutputControl:ReportingTolerances in the proposed and every baseline run."])
+    h, c = next(iter(distinct))
+    if max(h, c) > 1.12:
+        return Finding("UMLH-TOL", "Unmet-hour reporting tolerance", REVIEW,
+                       f"Unmet hours are counted with a {max(h, c):.2f} K tolerance (EnergyPlus default 0.2 K). "
+                       f"Tolerances above 1.11 K (2 °F) hide unmet hours and are likely to be questioned.",
+                       clause=clause, evidence=rows,
+                       fixes=["Use a tolerance that matches the thermostat throttling range (half of it), and "
+                              "state it in the submittal."])
+    return Finding("UMLH-TOL", "Unmet-hour reporting tolerance", PASS,
+                   f"Same tolerance in every model ({h:.2f} K heating, {c:.2f} K cooling).", clause=clause)
+
+
 def check(ctx: Context) -> List[Finding]:
     findings: List[Finding] = []
     stats_by_label: Dict[str, UnmetStats] = {}
+    tol = _tolerance_finding(ctx)
+    if tol is not None:
+        findings.append(tol)
     for m in ctx.simulated:
         st = compute(m)
         stats_by_label[m.label] = st

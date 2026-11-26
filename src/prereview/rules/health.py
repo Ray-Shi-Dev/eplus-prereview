@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections import OrderedDict
 from typing import Dict, List, Tuple
 
@@ -90,9 +91,19 @@ def check_model(model: ModelRun) -> List[Finding]:
             kb_of[key] = kb
 
     severe = [(k, v) for k, v in groups.items() if k[0] in ("Severe", "Fatal")]
-    if severe:
+    hard, soft = [], []
+    for key, msgs in severe:
+        kb = kb_of.get(key)
+        detail = " | ".join(" | ".join(m.details) for m in msgs)
+        if kb is not None and kb.severe_status and not (kb.fail_if and re.search(kb.fail_if, detail, re.I)):
+            soft.append((key, msgs))
+        else:
+            hard.append((key, msgs))
+    for group, status in ((hard, FAIL), (soft, REVIEW)):
+        if not group:
+            continue
         rows, fixes, objs = [], [], []
-        for key, msgs in severe:
+        for key, msgs in group:
             kb = kb_of.get(key)
             rows.append({"Count": str(total_count(msgs)), "Message": _first_text(msgs),
                          "What it means": kb.meaning if kb else "Not in the knowledge base — read the message "
@@ -100,13 +111,17 @@ def check_model(model: ModelRun) -> List[Finding]:
             if kb:
                 fixes.extend(f for f in kb.fixes if f not in fixes)
             objs.extend(o for o in _example_objects(msgs) if o not in objs)
-        n = sum(total_count(v) for _, v in severe)
-        out.append(Finding(
-            "HEALTH-SEVERE", "No severe errors", FAIL,
-            f"{n} severe error{'s' if n != 1 else ''} in a completed run. Reviewers ask for severe errors to be "
-            f"resolved (or explained) because results after a severe error may be invalid.",
-            model=model.label, clause=CLAUSE_ERR, evidence=rows, objects=objs[:10], fixes=fixes))
-    else:
+        n = sum(total_count(v) for _, v in group)
+        if status == FAIL:
+            msg = (f"{n} severe error{'s' if n != 1 else ''} in a completed run. Reviewers ask for severe errors to "
+                   f"be resolved (or explained) because results after a severe error may be invalid.")
+        else:
+            msg = (f"{n} severe message{'s' if n != 1 else ''} of a kind that usually does not invalidate results "
+                   f"(e.g. warm-up loads not converged while temperatures did). Fix or explain it — reviewers who "
+                   f"read the .err file will ask.")
+        out.append(Finding("HEALTH-SEVERE", "No severe errors", status, msg, model=model.label, clause=CLAUSE_ERR,
+                           evidence=rows, objects=objs[:10], fixes=fixes))
+    if not severe:
         out.append(Finding("HEALTH-SEVERE", "No severe errors", PASS, "No severe errors.", model=model.label,
                            clause=CLAUSE_ERR))
 
@@ -120,6 +135,8 @@ def check_model(model: ModelRun) -> List[Finding]:
             continue
         n = total_count(msgs)
         status = (kb.status if kb and kb.status else INFO)
+        if status == REVIEW and kb is not None and n < kb.review_min_count:
+            status = INFO
         row = {"Count": str(n), "Topic": kb.title if kb else "Other warning", "Message": _first_text(msgs),
                "What it means": kb.meaning if kb else "Not in the knowledge base."}
         if status == REVIEW:

@@ -39,6 +39,9 @@ BUILDINGS = {
     "RS": ("RetailStandalone", 1.25, 1.15),
     "OM": ("OfficeMedium", 1.25, 1.8),
 }
+LAB_SET = os.environ.get("LAB_SET", "humid")  # humid (Taipei, default) | cold (heating-side faults)
+if LAB_SET == "cold":
+    BUILDINGS = {k: v for k, v in BUILDINGS.items() if k in ("OS", "RS")}
 ROTATIONS = (0, 90, 180, 270)
 BASELINE_LPD_FACTOR = 1.1  # an allowed difference: baseline lighting power differs from proposed
 
@@ -140,8 +143,51 @@ def _remove_one_window(idf: Idf) -> Idf:
     return idf.remove([wins[0]])
 
 
+HTG_SETBACK_10 = ["Through: 12/31", "For: Weekdays", "Until: 06:00", "10.0", "Until: 19:00", "21.0",
+                  "Until: 24:00", "10.0", "For: WinterDesignDay", "Until: 24:00", "21.0",
+                  "For: AllOtherDays", "Until: 24:00", "10.0"]
+
+
+def _mild_heating_design_day(idf: Idf) -> Idf:
+    for o in idf.by_class("SizingPeriod:DesignDay"):
+        if "HTG" in o.name.upper():
+            idf = idf.set_field(o, 4, "2.0")
+    return idf
+
+
+def cold_faults() -> List[Fault]:
+    P = "proposed"
+    RS_COIL1 = "PSZ-AC:1_Unitary_Package_HeatCoil"
+    nom = "Design Size Nominal Capacity"
+    return [
+        Fault("C01", "RS", P, "Furnace hard-sized at 40% of design (Back_Space)",
+              lambda m, x: M.set_field(m, "Coil:Heating:Fuel", RS_COIL1, 4,
+                                       f"{0.4 * _design_size(x, RS_COIL1, nom):.1f}"),
+              # retail has high internal gains: few occupied heating hours even at 40% -- the diagnosis is the test
+              [Expect("UMLH-300", "*", P, zone="BACK_SPACE", cause="hard_sized_below_design")]),
+        Fault("C02", "RS", P, "Furnace never available (Front_Retail)",
+              lambda m, x: M.set_field(_always_off(m), "Coil:Heating:Fuel", "PSZ-AC:4_Unitary_Package_HeatCoil", 1,
+                                       "LAB_ALWAYS_OFF"),
+              [Expect("UMLH-300", "FAIL", P, zone="FRONT_RETAIL", cause="never_delivers")]),
+        Fault("C03", "OS", P, "Heating sized on a +2 °C design day instead of the 99.6% condition",
+              lambda m, x: _mild_heating_design_day(m),
+              [Expect("UMLH-300", "*", P, cause="beyond_design_day"), Expect("UMLH-50", "FAIL")]),
+        Fault("C04", "OS", P, "10 °C night setback with no night cycling (morning warm-up)",
+              lambda m, x: M.set_field_all(_replace_schedule(m, "HTGSETP_SCH_NO_OPTIMUM", "Temperature",
+                                                             HTG_SETBACK_10), "AvailabilityManager:NightCycle", 3,
+                                           "StayOff"),
+              [Expect("UMLH-300", "*", P, cause="morning_recovery"), Expect("CONS-TSTAT-HTG", "FAIL")]),
+        Fault("C05", "OS", P, "Heat pump backup heater hard-sized at 20% (Perimeter_ZN_1)",
+              lambda m, x: M.set_field(m, "Coil:Heating:Fuel", "PSZ-AC:2 Heat Pump DX Supp Heating Coil", 4,
+                                       f"{0.2 * _design_size(x, 'PSZ-AC:2 Heat Pump DX Supp Heating Coil', nom):.1f}"),
+              [Expect("UMLH-300", "*", P, zone="PERIMETER_ZN_1", cause="hard_sized_below_design")]),
+    ]
+
+
 # ----------------------------------------------------------------------------- the faults
 def faults() -> List[Fault]:
+    if LAB_SET == "cold":
+        return cold_faults()
     P, B0 = "proposed", "B000"
     OS_COIL2 = "PSZ-AC:2 Heat Pump DX Cooling Coil"
     OS_COIL1 = "PSZ-AC:1 Heat Pump DX Cooling Coil"
@@ -281,6 +327,10 @@ def build(lab: str, stage: str = "clean") -> None:
             prep = paths["proposed"] + ".prep"
             prepare(os.path.join(PROTO, f"ASHRAE901_{proto}_STD2019_Denver.idf"), DDY, prep)
             m = Idf.from_file(prep)
+            # the prototypes stop warm-up at 15-25 days; in some climates that leaves severe
+            # warm-up convergence errors (prereview flags them) -- apply the fix it recommends
+            bld = m.first("Building")
+            m = m.set_field(bld, 6, "50")
             sp = m.by_class("Sizing:Parameters")[0]
             m = m.set_field(sp, 0, str(fh))
             m = m.set_field(m.by_class("Sizing:Parameters")[0], 1, str(fc))

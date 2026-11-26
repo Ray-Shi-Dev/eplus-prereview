@@ -27,7 +27,7 @@ def _load(path: str, role: str, label: str, cache: Dict[str, ModelRun]) -> Model
 
 
 def _match(e: Expect, findings: List[Finding]) -> Dict:
-    cands = [f for f in findings if f.rule_id == e.rule and f.status == e.status
+    cands = [f for f in findings if f.rule_id == e.rule and (e.status == "*" or f.status == e.status)
              and (e.model is None or f.model == e.model)]
     detail = ""
     for f in cands:

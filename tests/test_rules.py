@@ -159,3 +159,17 @@ def test_cli_check_writes_reports(tmp_path):
     assert "What to fix first" in html and "Unmet load hours" in html
     labels = [m["label"] for m in data["models"]]
     assert labels == ["Proposed", "Baseline 0°", "Baseline 90°", "Baseline 180°", "Baseline 270°"]
+
+
+def test_reporting_tolerance(tmp_path):
+    from prereview.idf import Idf
+    p = make_run(str(tmp_path), "p", 0, 10)
+    b = make_run(str(tmp_path), "b", 0, 10)
+    p.idf = Idf("OutputControl:ReportingTolerances, 1.11, 1.11;")
+    b.idf = Idf("Version, 26.2;")
+    f = status(unmet.check(ctx(p, [b])), "UMLH-TOL")
+    assert f.status == "FAIL"  # 1.11 K vs EnergyPlus default 0.2 K
+    b.idf = Idf("OutputControl:ReportingTolerances, 1.11, 1.11;")
+    assert status(unmet.check(ctx(p, [b])), "UMLH-TOL").status == "PASS"
+    p.idf = b.idf = Idf("OutputControl:ReportingTolerances, 2.0, 2.0;")
+    assert status(unmet.check(ctx(p, [b])), "UMLH-TOL").status == "REVIEW"

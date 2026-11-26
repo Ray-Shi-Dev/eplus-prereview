@@ -24,6 +24,9 @@ class KbEntry:
     status: Optional[str] = None  # FAIL / REVIEW / INFO override; None = by message level
     ignore: bool = False          # caused by prereview's own output requests
     stage: str = ""               # input | sizing | simulation | output
+    severe_status: Optional[str] = None  # status when EnergyPlus reports it as Severe (default FAIL)
+    fail_if: Optional[str] = None        # ...but FAIL anyway when the message details match this
+    review_min_count: int = 1            # a REVIEW warning seen fewer times than this is only INFO
     _rx: Optional[re.Pattern] = None
 
     def matches(self, msg: ErrMessage) -> bool:
@@ -175,15 +178,20 @@ KB: List[KbEntry] = [
     KbEntry("S-PSYCH", r"Psy\w+|psychrometric|Relative Humidity out of range|Saturation temperature",
             "Psychrometric calculation out of range",
             "A node or zone reached impossible air conditions (temperature/humidity), usually from extreme supply "
-            "conditions, missing humidity control or a coil running with almost no airflow.",
+            "conditions, missing humidity control or a coil running with almost no airflow. A handful of "
+            "occurrences in a year is numerical noise.",
             ["Find the component named in the continuation lines; check its airflow, setpoints and controls."],
-            status="REVIEW", stage="simulation"),
+            status="REVIEW", stage="simulation", review_min_count=20),
     KbEntry("S-WARMUP", r"CheckWarmupConvergence|did not converge after \d+ warmup days|Warmup.*(did not converge|not converged)",
             "Warm-up did not converge",
             "Zone temperatures/loads had not stabilised when warm-up ended, so the first days of each run period "
             "start from an unsettled state.",
-            ["Increase 'Maximum Number of Warmup Days' in the Building object (e.g. 50).",
-             "Check for zones with very high thermal mass or no HVAC."], status="REVIEW", stage="simulation"),
+            ["Increase 'Maximum Number of Warmup Days' in the Building object (EnergyPlus suggests a value in "
+             "the message; 50 is a safe choice) and re-run.",
+             "If only the load comparison fails (temperatures converged), the cause is usually HVAC cycling in "
+             "one zone; results are generally usable — say so in the submittal.",
+             "Check for zones with very high thermal mass or no HVAC."], status="REVIEW", stage="simulation",
+            severe_status="REVIEW", fail_if=r"Temp Comparison[^|]*Fail Convergence"),
     KbEntry("S-HVAC-ITER", r"Maximum iterations .* exceeded for all HVAC loops",
             "HVAC iterations did not converge",
             "In some timesteps the HVAC solution did not converge. A few occurrences are normal; thousands point to "
