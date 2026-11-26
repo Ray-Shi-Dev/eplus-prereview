@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import Dict, List, Set
+from typing import Dict, List, Set, Tuple
 
 from .sqlout import SqlResults
 
@@ -73,3 +73,48 @@ def air_loop_components(sql: SqlResults) -> Dict[str, List[Dict[str, str]]]:
             if row.get(col_n):
                 out[loop.upper()].append({"type": row.get(col_t, ""), "name": row[col_n]})
     return dict(out)
+
+
+PLANT_EQUIPMENT_PREFIXES = ("CHILLER", "BOILER", "DISTRICTCOOLING", "DISTRICTHEATING", "HEATPUMP:PLANTLOOP",
+                            "HEATPUMP:WATERTOWATER", "CHILLERHEATER", "THERMALSTORAGE", "WATERHEATER",
+                            "CENTRALHEATPUMPSYSTEM", "HEATEXCHANGER:FLUIDTOFLUID", "PLANTCOMPONENT:TEMPERATURESOURCE")
+
+
+def plant_loops(sql: SqlResults) -> Dict[str, Dict[str, List[Dict[str, str]]]]:
+    """Upper-case plant loop name -> {"supply": [{type, name}], "demand": [{type, name}]}."""
+    out: Dict[str, Dict[str, List[Dict[str, str]]]] = {}
+    for row in _table_rows(sql, "Plant Loop Component Arrangement"):
+        loop = row.get("Loop Name", "").upper()
+        side = row.get("Side", "").lower()
+        ctype, cname = row.get("Component Type", ""), row.get("Component Name", "")
+        if not loop or side not in ("supply", "demand") or not cname:
+            continue
+        d = out.setdefault(loop, {"supply": [], "demand": []})
+        item = {"type": ctype.upper(), "name": cname.upper()}
+        if item not in d[side]:
+            d[side].append(item)
+    return out
+
+
+def plants_serving(sql: SqlResults, component_names: Set[str]) -> Tuple[List[str], List[Dict[str, str]]]:
+    """Plant loops (and their plant equipment) that serve any of the given demand components, following
+    heat exchangers and other components that sit on the supply side of one loop and the demand side of
+    another (e.g. primary/secondary chilled water)."""
+    loops = plant_loops(sql)
+    names = {n.upper() for n in component_names}
+    start = [lp for lp, d in loops.items() if any(c["name"] in names for c in d["demand"])]
+    seen: List[str] = []
+    equipment: List[Dict[str, str]] = []
+    queue = list(start)
+    while queue:
+        lp = queue.pop(0)
+        if lp in seen:
+            continue
+        seen.append(lp)
+        for comp in loops[lp]["supply"]:
+            if comp["type"].startswith(PLANT_EQUIPMENT_PREFIXES) and comp not in equipment:
+                equipment.append(comp)
+            for other, d in loops.items():
+                if other not in seen and any(c["name"] == comp["name"] for c in d["demand"]):
+                    queue.append(other)
+    return seen, equipment

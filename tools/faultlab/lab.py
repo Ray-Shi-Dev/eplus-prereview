@@ -38,7 +38,11 @@ BUILDINGS = {
     "OS": ("OfficeSmall", 1.25, 1.4),
     "RS": ("RetailStandalone", 1.25, 1.15),
     "OM": ("OfficeMedium", 1.25, 1.8),
+    # chiller plant cases only (no clean baseline set): the prototype's chillers are hard-sized for
+    # Denver; autosized here, then faults put the plant back out of reach
+    "OL": ("OfficeLarge", 1.25, 1.3),
 }
+PROPOSED_ONLY = {"OL"}
 LAB_SET = os.environ.get("LAB_SET", "humid")  # humid (Taipei, default) | cold (heating-side faults)
 if LAB_SET == "cold":
     BUILDINGS = {k: v for k, v in BUILDINGS.items() if k in ("OS", "RS")}
@@ -231,6 +235,9 @@ def faults() -> List[Fault]:
         Fault("F32", "OS", P, "Cooling sized with no margin (sizing factor 1.0) in a humid climate",
               lambda m, x: m.set_field(m.by_class("Sizing:Parameters")[0], 1, "1.0"),
               [Expect("UMLH-300", "FAIL", P, cause="supply_air_not_at_setpoint")]),
+        Fault("F33", "OL", P, "Chiller chilled-water flow hard-sized at 24% of design (left over from the "
+              "Denver model)", lambda m, x: _chw_flow_hard(m, "0.0283687"),
+              [Expect("UMLH-300", "*", P, cause="hard_sized_below_design")], baselines=[]),
         Fault("F11", "OM", P, "Zone airflow sized for 6 °C supply air while the system supplies 12.8 °C "
               "(Perimeter_bot_ZN_1)",
               lambda m, x: M.set_field(m, "Sizing:Zone", "Perimeter_bot_ZN_1", 2, "6.0"),
@@ -301,8 +308,23 @@ CLEAN_PROJECT = {
 
 
 # ----------------------------------------------------------------------------- build / run
+def _autosize_chillers(m: Idf) -> Idf:
+    for name in [o.name for o in m.by_class("Chiller:Electric:ReformulatedEIR")]:
+        m = m.set_field(m.find("Chiller:Electric:ReformulatedEIR", name), 1, "Autosize")
+        m = m.set_field(m.find("Chiller:Electric:ReformulatedEIR", name), 5, "Autosize")
+    return m
+
+
+def _chw_flow_hard(m: Idf, value: str) -> Idf:
+    for name in [o.name for o in m.by_class("Chiller:Electric:ReformulatedEIR")]:
+        m = m.set_field(m.find("Chiller:Electric:ReformulatedEIR", name), 5, value)
+    return m
+
+
 def _clean_paths(lab: str, b: str) -> Dict[str, str]:
     out = {"proposed": os.path.join(lab, "idf", b, "proposed.idf")}
+    if b in PROPOSED_ONLY:
+        return out
     for r in ROTATIONS:
         out[f"B{r:03d}"] = os.path.join(lab, "idf", b, f"B{r:03d}.idf")
     return out
@@ -334,8 +356,12 @@ def build(lab: str, stage: str = "clean") -> None:
             sp = m.by_class("Sizing:Parameters")[0]
             m = m.set_field(sp, 0, str(fh))
             m = m.set_field(m.by_class("Sizing:Parameters")[0], 1, str(fc))
+            if b == "OL":
+                m = _autosize_chillers(m)
             m.write(paths["proposed"])
             os.remove(prep)
+            if b in PROPOSED_ONLY:
+                continue
             for r in ROTATIONS:
                 bl = M.rotate(M.scale_level(m, "Lights", BASELINE_LPD_FACTOR), r)
                 bl.write(paths[f"B{r:03d}"])

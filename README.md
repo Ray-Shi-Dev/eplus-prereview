@@ -103,9 +103,11 @@ FAIL findings.
 
 Latest results (EnergyPlus 26.2):
 
-- Taipei (hot-humid): 32 of 32 faults detected; 0 FAIL findings on the 3 clean buildings (each with a
-  proposed model and 4 baseline orientations).
-- Chicago (heating faults): see `docs/FAULTLAB.md`.
+- Taipei (hot-humid): **33 of 33** faults detected; **0** FAIL findings on the 3 clean buildings (each with
+  a proposed model and 4 baseline orientations).
+- Chicago (heating faults): **5 of 5** faults detected; **0** FAIL findings on the 2 clean buildings.
+- The faults cover health, unmet hours on DX, VAV and chilled-water plant systems, must-match items, and
+  baseline rules. See `docs/FAULTLAB.md` and the scorecards in `docs/`.
 
 ```bash
 python -I tools/faultlab/lab.py build LAB clean && python -I tools/faultlab/lab.py run LAB clean

@@ -22,8 +22,8 @@ How the models are prepared (`tools/faultlab/prepare.py`, `lab.py`):
 
 Two fault sets:
 
-- **humid** (default): Taipei TMYx, 32 faults. Covers simulation health, unmet hours (cooling),
-  baseline/proposed mismatches, and baseline rules.
+- **humid** (default): Taipei TMYx, 33 faults. Covers simulation health, unmet hours (cooling, including a
+  chilled-water plant), baseline/proposed mismatches, and baseline rules.
 - **cold**: Chicago O'Hare TMY3, 5 heating-side faults: hard-sized furnace, furnace never available, mild
   heating design day, morning warm-up, undersized heat-pump backup heater.
 
@@ -59,6 +59,12 @@ Each lesson below changed the code:
   are now reviewed only for health. Runs of different lengths are not compared hour by hour.
 - **"Morning recovery" is often a symptom, not the cause.** When three quarters of the misses happen beyond
   the sizing design day, the design day is reported as the cause.
+- **The DOE large office prototype carries Denver-sized chillers.** Moved to Taipei, it has 1,300 unmet
+  hours. The first diagnosis said "the chilled-water plant cannot hold its supply temperature". Once
+  water-flow fields were added to the hard-sizing check, it named the real cause: each chiller's reference
+  chilled-water flow is hard-coded at 24% of what the Taipei design needs. Fault F33 reproduces this.
+  A second plant fault, an operation-scheme load cap, had no effect on the simulation, so it was dropped
+  rather than kept as a fake "pass".
 - **Several faults that looked wrong were the tool being right.** In one, the HVAC schedule turned off while
   people were still in the building. In another, a heating setpoint ran past the HVAC hours. Whenever the
   diagnosis disagreed with the planned fault, we checked the hourly data before changing anything. Only

@@ -142,6 +142,7 @@ def _referenced_schedules(idf: Idf) -> List[str]:
 
 
 def _supply_outlet_nodes(idf: Idf) -> List[str]:
+    """Air loop supply outlets and plant loop setpoint nodes (where supply temperatures are controlled)."""
     nodes = []
     for loop in idf.by_class("AirLoopHVAC"):
         node = loop.get(9).strip()
@@ -149,6 +150,10 @@ def _supply_outlet_nodes(idf: Idf) -> List[str]:
             continue
         nl = idf.find("NodeList", node)
         nodes.extend([f for f in nl.fields[1:] if f] if nl is not None else [node])
+    for loop in idf.by_class("PlantLoop"):
+        node = loop.get(4).strip()
+        if node and node not in nodes:
+            nodes.append(node)
     return nodes
 
 

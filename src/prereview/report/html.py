@@ -23,6 +23,7 @@ CAUSE_LABEL = {
     "morning_recovery": "Morning recovery",
     "hard_sized_below_design": "Hard-sized below design",
     "supply_air_not_at_setpoint": "Coil can't hold supply-air setpoint",
+    "plant_not_at_setpoint": "Plant can't hold supply-water setpoint",
     "terminal_at_max_airflow": "Terminal at maximum airflow",
     "beyond_design_day": "Weather beyond design day",
     "capacity_limited": "At capacity",

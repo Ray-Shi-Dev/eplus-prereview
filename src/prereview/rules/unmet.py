@@ -15,7 +15,7 @@ from typing import Dict, List, Optional, Tuple
 
 from ..model import ModelRun
 from ..sqlout import to_float
-from ..topology import air_loop_components, zone_services
+from ..topology import air_loop_components, plant_loops, plants_serving, zone_services
 from .base import FAIL, INFO, PASS, REVIEW, SKIPPED, Context, Finding
 
 VAR_H = "Zone Heating Setpoint Not Met While Occupied Time"
@@ -52,6 +52,7 @@ SYSTEM_OFF = "system_off"
 RECOVERY = "morning_recovery"
 HARD_SIZED = "hard_sized_below_design"
 COIL_LIMITED = "supply_air_not_at_setpoint"
+PLANT_LIMITED = "plant_not_at_setpoint"
 AIRFLOW_LIMITED = "terminal_at_max_airflow"
 DESIGN_BASIS = "beyond_design_day"
 AT_CAPACITY = "capacity_limited"
@@ -64,12 +65,17 @@ CAUSE_TEXT = {
     RECOVERY: "Unmet hours cluster in the first two occupied hours of the day (setback recovery).",
     HARD_SIZED: "Capacity-limited, and a component serving the zone is hard-sized below its design size.",
     COIL_LIMITED: "The air system could not hold its supply-air temperature setpoint (coil capacity).",
+    PLANT_LIMITED: "The {water} plant serving the zone could not hold its supply-water temperature setpoint.",
     AIRFLOW_LIMITED: "The zone's terminal was at maximum airflow (zone design airflow too low).",
     DESIGN_BASIS: "Capacity-limited when outdoor conditions exceed the {mode} design day used for sizing.",
     AT_CAPACITY: "Capacity-limited: the system was at or near its peak output while the zone missed setpoint.",
     PARTIAL: "The system ran below its peak while the zone missed setpoint (control or terminal limits).",
     MARGINAL: "Misses are small: the zone was within 0.5 K of setpoint in most unmet hours.",
 }
+
+def _cause_text(cause: str, mode: str) -> str:
+    return CAUSE_TEXT[cause].format(mode=mode, water="chilled-water" if mode == "cooling" else "hot-water")
+
 
 CAUSE_FIXES = {
     NO_DELIVERY: [
@@ -100,6 +106,13 @@ CAUSE_FIXES = {
         "For DX cooling in hot-humid climates, check the coil's sensible heat ratio and rated capacity at the "
         "design wet-bulb; latent load can use up capacity the sensible load needs.",
         "[baseline] Baseline capacities must come from the sizing run, oversized 15% (cooling) / 25% (heating).",
+    ],
+    PLANT_LIMITED: [
+        "Check the capacity of the plant equipment (chillers/boilers) against the coincident coil loads, the plant "
+        "equipment operation scheme (load ranges that cap the equipment that can run) and Sizing:Plant.",
+        "If the plant has a primary/secondary arrangement or heat exchanger, check its capacity and setpoints.",
+        "[baseline] Baseline plant capacities come from the sizing run (Appendix G): check the plant is autosized "
+        "and the number of chillers/boilers follows G3.1.3.",
     ],
     AIRFLOW_LIMITED: [
         "Raise the zone design airflow: check Sizing:Zone supply-air temperature (or temperature difference), "
@@ -218,7 +231,7 @@ def _is_heating_dd(name: str) -> bool:
 
 _CAPACITY_WORDS = ("capacity", "maximum air flow", "maximum flow", "supply air flow", "design air flow",
                    "rated air flow", "hot water flow", "reheat water", "design water flow", "maximum water flow",
-                   "air flow rate", "design size")
+                   "air flow rate", "water flow rate", "fluid flow rate", "design size")
 _NOT_CAPACITY_WORDS = ("minimum", "fraction", "ratio", "outdoor", "no load", "sensible heat ratio",
                        "fan power", "pressure", "efficiency", "cop", "temperature", "per floor area",
                        "electric power", "pump", "speed 1", "low speed")
@@ -248,7 +261,8 @@ def _relevant_component(ctype: str, mode: str) -> bool:
     return True
 
 
-def _hard_sizing_for_zone(model: ModelRun, zone: str, mode: str, services, loops) -> List[Dict[str, object]]:
+def _hard_sizing_for_zone(model: ModelRun, zone: str, mode: str, services, loops,
+                          plant_equipment: Optional[List[Dict[str, str]]] = None) -> List[Dict[str, object]]:
     """Components serving the zone whose user-specified capacity or flow is below the design size."""
     zone_u = zone.upper()
     n_zones: Dict[str, int] = defaultdict(int)
@@ -262,6 +276,7 @@ def _hard_sizing_for_zone(model: ModelRun, zone: str, mode: str, services, loops
         for loop in svc.air_loops:
             names.add(loop.upper())
             names |= {c["name"].upper() for c in loops.get(loop.upper(), [])}
+    names |= {e["name"].upper() for e in plant_equipment or []}
     by_comp: Dict[Tuple[str, str], Dict[str, Tuple[float, str]]] = defaultdict(dict)
     for row in model.sql.component_sizes():
         cname = (row["name"] or "").upper()
@@ -409,6 +424,13 @@ def _diagnose(model: ModelRun, stats: UnmetStats, top_n: int) -> List[ZoneModeDi
         k = (zs["zone"].upper(), (zs["load_type"] or "").lower())
         design_load[k] = max(design_load.get(k, 0.0), float(zs["user_load"] or zs["calc_load"] or 0.0))
     zone_sizing_sat = _zone_sizing_supply_temps(model)
+    loop_sp_nodes = {}
+    if model.idf is not None:
+        for pl in model.idf.by_class("PlantLoop"):
+            if pl.get(4):
+                loop_sp_nodes[pl.name.upper()] = pl.get(4).strip().upper()
+    all_plants = plant_loops(s)
+    condenser = {lp for lp, d in all_plants.items() if any(c["type"].startswith("CHILLER") for c in d["demand"])}
 
     items: List[Tuple[str, str, List[float]]] = []
     for z, series in h.items():
@@ -475,6 +497,30 @@ def _diagnose(model: ModelRun, stats: UnmetStats, top_n: int) -> List[ZoneModeDi
                     d.served_by = [loop]
         if svc and not d.served_by:
             d.served_by = sorted(svc.air_loops) + sorted(svc.zone_equipment)
+        # plant side: water coils serving the zone -> plant loops -> supply temperature vs setpoint
+        coil_names = set()
+        if svc:
+            coil_names |= {n.upper() for n in svc.terminals | svc.zone_equipment}
+            for loop in svc.air_loops:
+                coil_names |= {c["name"].upper() for c in loops.get(loop.upper(), [])}
+        plant_seen, plant_equipment = plants_serving(s, coil_names) if coil_names else ([], [])
+        wanted_equip = ("CHILLER", "DISTRICTCOOLING") if mode == "cooling" else ("BOILER", "DISTRICTHEATING")
+        relevant = [lp for lp in plant_seen if lp not in condenser and any(
+            e["type"].startswith(wanted_equip) or e["type"].startswith("HEATEXCHANGER")
+            for e in all_plants.get(lp, {}).get("supply", []))]
+        plant_miss, plant_desc = 0, ""
+        for lp in relevant:
+            nk = loop_sp_nodes.get(lp)
+            tt, ss = (node_t.get(nk), node_sp.get(nk)) if nk else (None, None)
+            if not tt or not ss:
+                continue
+            if mode == "cooling":
+                n = sum(1 for i in idx if ss[i] > -50 and tt[i] > ss[i] + 0.5)
+            else:
+                n = sum(1 for i in idx if ss[i] > -50 and tt[i] < ss[i] - 0.5)
+            if n > plant_miss:
+                plant_miss, plant_desc = n, f"plant loop {lp}"
+        plant_equipment = [e for e in plant_equipment if e["type"].startswith(wanted_equip)]
         zone_occ = occ.get(z)
         recovery_n = 0
         if zone_occ:
@@ -501,16 +547,17 @@ def _diagnose(model: ModelRun, stats: UnmetStats, top_n: int) -> List[ZoneModeDi
                     if lim_db is not None and odb[i] < lim_db - 0.5:
                         beyond_dd += 1
                 dd_desc = f"{dd['name']} (DB {lim_db:.1f} °C)" if lim_db is not None else dd["name"]
-        hard = _hard_sizing_for_zone(model, z, mode, services, loops)
+        hard = _hard_sizing_for_zone(model, z, mode, services, loops, plant_equipment)
         d.hard_sizing = hard
         d.counts = dict(counts)
         for key, val in ((RECOVERY, recovery_n), (DESIGN_BASIS, beyond_dd), (COIL_LIMITED, sat_miss),
-                         (AIRFLOW_LIMITED, damper_max)):
+                         (AIRFLOW_LIMITED, damper_max), (PLANT_LIMITED, plant_miss)):
             if val:
                 d.counts[key] = val
 
         frac = lambda k: d.counts.get(k, 0) / n_idx  # noqa: E731
-        limited = frac(AT_CAPACITY) >= 0.5 or frac(COIL_LIMITED) >= 0.5 or frac(AIRFLOW_LIMITED) >= 0.5
+        limited = (frac(AT_CAPACITY) >= 0.5 or frac(COIL_LIMITED) >= 0.5 or frac(AIRFLOW_LIMITED) >= 0.5
+                   or frac(PLANT_LIMITED) >= 0.5)
         if frac(NO_DELIVERY) >= 0.5:
             d.cause = NO_DELIVERY
         elif frac(SYSTEM_OFF) >= 0.5:
@@ -525,6 +572,8 @@ def _diagnose(model: ModelRun, stats: UnmetStats, top_n: int) -> List[ZoneModeDi
             d.cause = RECOVERY
         elif limited and frac(DESIGN_BASIS) >= 0.5:
             d.cause = DESIGN_BASIS
+        elif frac(PLANT_LIMITED) >= 0.5:
+            d.cause = PLANT_LIMITED
         elif frac(COIL_LIMITED) >= 0.5:
             d.cause = COIL_LIMITED
         elif frac(AIRFLOW_LIMITED) >= 0.5:
@@ -543,6 +592,7 @@ def _diagnose(model: ModelRun, stats: UnmetStats, top_n: int) -> List[ZoneModeDi
                            (COIL_LIMITED, f"with {sat_desc} missing its supply-air setpoint by >0.5 K"
                             if sat_desc else "with the supply air missing its setpoint"),
                            (AIRFLOW_LIMITED, "with the zone's VAV damper fully open"),
+                           (PLANT_LIMITED, f"with {plant_desc} missing its supply-water setpoint by >0.5 K"),
                            (RECOVERY, "in the first two occupied hours of the day"),
                            (DESIGN_BASIS, f"when outdoor conditions exceed {dd_desc}")):
             if d.counts.get(key):
@@ -616,7 +666,7 @@ def _model_finding(model: ModelRun, stats: UnmetStats, edition: str) -> Finding:
     if stats.diagnosis and status != PASS:
         top = stats.diagnosis[0]
         msg += f" Main contributor: {top.zone} ({top.mode}, {top.hours:.0f} h) — " \
-               f"{CAUSE_TEXT[top.cause].format(mode=top.mode)}"
+               f"{_cause_text(top.cause, top.mode)}"
         if top.cause == HARD_SIZED and top.hard_sizing:
             hz = top.hard_sizing[0]
             msg += (f" {hz['type']} “{hz['component']}” {hz['field']} is {hz['user']:,.4g} {hz['units']}, "
@@ -624,7 +674,7 @@ def _model_finding(model: ModelRun, stats: UnmetStats, edition: str) -> Finding:
         others = [d for d in stats.diagnosis[1:] if d.share >= 0.1]
         if others:
             msg += " Also: " + "; ".join(f"{d.zone} ({d.mode}, {d.hours:.0f} h, "
-                                         f"{CAUSE_TEXT[d.cause].format(mode=d.mode).rstrip('.').lower()})"
+                                         f"{_cause_text(d.cause, d.mode).rstrip('.').lower()})"
                                          for d in others[:3]) + "."
         seen = set()
         for dg in [top] + others:

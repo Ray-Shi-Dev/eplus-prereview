@@ -1,6 +1,6 @@
-# Fault lab scorecard (2026-11-26 23:47)
+# Fault lab scorecard (2026-11-27 00:05)
 
-- Seeded faults detected with the right rule (and zone/cause where specified): **32 / 32**
+- Seeded faults detected with the right rule (and zone/cause where specified): **33 / 33**
 - FAIL findings on clean proposed/baseline sets: **0** (3 buildings × proposed + 4 baseline orientations)
 
 | Fault | Building | Seeded in | What was seeded | Expected | Result |
@@ -16,6 +16,7 @@
 | F09 | OS | proposed | HVAC starts at 11:00, after occupancy (stay off at night) | UMLH-300 FAIL cause system_off; CONS-HVAC-SCHED FAIL | ✅ top contributor CORE_ZN (cooling): system_off / The HVAC serving 5 zones runs on different hours in the proposed and baseline models. |
 | F10 | OS | proposed | No night cycling and 40 °C setup: HVAC starts at occupancy into a hot building | UMLH-300 PASS cause morning_recovery; CONS-TSTAT-CLG FAIL | ✅ top contributor CORE_ZN (cooling): morning_recovery / Cooling setpoint schedule differs between proposed and baseline in 4 zones (4 baseline runs). |
 | F32 | OS | proposed | Cooling sized with no margin (sizing factor 1.0) in a humid climate | UMLH-300 FAIL cause supply_air_not_at_setpoint | ✅ top contributor CORE_ZN (cooling): supply_air_not_at_setpoint |
+| F33 | OL | proposed | Chiller chilled-water flow hard-sized at 24% of design (left over from the Denver model) | UMLH-300 * cause hard_sized_below_design | ✅ top contributor PERIMETER_BOT_ZN_4 (cooling): hard_sized_below_design |
 | F11 | OM | proposed | Zone airflow sized for 6 °C supply air while the system supplies 12.8 °C (Perimeter_bot_ZN_1) | UMLH-300 FAIL zone PERIMETER_BOT_ZN_1 cause terminal_at_max_airflow | ✅ top contributor PERIMETER_BOT_ZN_1 (cooling): terminal_at_max_airflow |
 | F12 | OS | proposed | Proposed coil at 90% (Core_ZN): within 300 but > baseline + 50 | UMLH-50 FAIL; UMLH-300 PASS | ✅ Proposed has 166.50 unmet hours vs a baseline average of 68.94 (+97.56 h; limit +50). / 166.5 unmet load hours (exact count); heating + cooling total 166.50 h. |
 | F13 | OS | B000 | Baseline coil hard-sized at 50% (Perimeter_ZN_1) | UMLH-300 FAIL zone PERIMETER_ZN_1 cause hard_sized_below_design | ✅ top contributor PERIMETER_ZN_1 (cooling): hard_sized_below_design |

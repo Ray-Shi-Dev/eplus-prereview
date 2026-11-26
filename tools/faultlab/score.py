@@ -56,7 +56,10 @@ def score(lab: str) -> Dict:
     cache: Dict[str, ModelRun] = {}
     t0 = time.time()
     result: Dict = {"clean": {}, "faults": [], "generated": time.strftime("%Y-%m-%d %H:%M")}
+    from faultlab.lab import PROPOSED_ONLY
     for b in BUILDINGS:
+        if b in PROPOSED_ONLY:
+            continue
         runs = os.path.join(lab, "runs", b)
         p = _load(os.path.join(runs, "proposed"), "proposed", "proposed", cache)
         bl = [_load(os.path.join(runs, f"B{r:03d}"), "baseline", f"B{r:03d}", cache) for r in ROTATIONS]
@@ -69,13 +72,13 @@ def score(lab: str) -> Dict:
         }
     for f in faults():
         runs = os.path.join(lab, "runs", f.building)
-        proj = dict(CLEAN_PROJECT[f.building])
+        proj = dict(CLEAN_PROJECT.get(f.building, {}))
         proj.update(f.project)
         if f.target == "proposed":
             p = _load(os.path.join(lab, "runs", "faults", f.id), "proposed", "proposed", cache)
         else:
             p = _load(os.path.join(runs, "proposed"), "proposed", "proposed", cache)
-        labels = f.baselines or [f"B{r:03d}" for r in ROTATIONS]
+        labels = f.baselines if f.baselines is not None else [f"B{r:03d}" for r in ROTATIONS]
         bl = []
         for lbl in labels:
             if f.target == lbl:
