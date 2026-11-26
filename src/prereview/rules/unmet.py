@@ -509,8 +509,7 @@ def _diagnose(model: ModelRun, stats: UnmetStats, top_n: int) -> List[ZoneModeDi
                     n = sum(1 for i in idx if ss[i] > -50 and tt[i] < ss[i] - 0.5)
                 if n > sat_miss:
                     sat_miss = n
-                    gaps = [abs(tt[i] - ss[i]) for i in idx if ss[i] > -50]
-                    sat_desc = f"air loop {loop} (supply outlet {nk.title() if False else nk})"
+                    sat_desc = f"air loop {loop} (supply outlet {nk})"
                     d.served_by = [loop]
         if svc and not d.served_by:
             d.served_by = sorted(svc.air_loops) + sorted(svc.zone_equipment)

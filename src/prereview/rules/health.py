@@ -7,7 +7,7 @@ from collections import OrderedDict
 from typing import Dict, List, Tuple
 
 from ..errfile import ErrMessage, total_count
-from ..kb import KB, KbEntry, lookup
+from ..kb import KbEntry, lookup
 from ..model import ModelRun
 from .base import FAIL, INFO, PASS, REVIEW, Context, Finding
 

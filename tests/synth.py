@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import List, Sequence, Tuple
 
 SCHEMA = """
 create table Simulations (SimulationIndex integer primary key, EnergyPlusVersion text, TimeStamp text,

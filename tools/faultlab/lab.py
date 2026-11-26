@@ -11,7 +11,6 @@ LAB_PROTOTYPES (folder with ASHRAE901_*_STD2019_Denver.idf).
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 from concurrent.futures import ProcessPoolExecutor
