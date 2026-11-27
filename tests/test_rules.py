@@ -278,3 +278,14 @@ def test_files_are_paired_by_name(tmp_path):
     e = ModelRun.load(str(empty), "proposed")
     f = [x for x in health.check_model(e) if x.rule_id == "HEALTH-RUN"][0]
     assert f.status == "FAIL" and "No EnergyPlus results" in f.message
+
+
+def test_completed_run_without_sql_is_flagged_not_crashed(tmp_path):
+    from prereview.rules import health
+    folder = tmp_path / "proposed"
+    folder.mkdir()
+    write(str(folder / "eplusout.err"), err_text([]))
+    m = ModelRun.load(str(folder), "proposed", "Proposed")
+    by_rule = {f.rule_id: f for f in health.check_model(m)}
+    assert by_rule["HEALTH-RUN"].status == "PASS" and "26.2.0" in by_rule["HEALTH-RUN"].message
+    assert by_rule["HEALTH-SQL"].status == "FAIL"

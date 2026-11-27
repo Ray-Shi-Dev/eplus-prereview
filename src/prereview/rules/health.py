@@ -62,9 +62,19 @@ def check_model(model: ModelRun) -> List[Finding]:
                       for m in fatal_msgs[:8]],
             objects=_example_objects(fatal_msgs), fixes=fixes))
         return out
+    version = (model.sql.version() if model.sql is not None else None) or (err.version if err else None) or ""
     out.append(Finding("HEALTH-RUN", "Simulation completed", PASS,
-                       f"EnergyPlus {model.sql.version() or ''} completed successfully.".replace("  ", " "),
+                       f"EnergyPlus {version} completed successfully.".replace("  ", " "),
                        model=model.label, clause=CLAUSE_RUN))
+    if model.sql is None:
+        out.append(Finding(
+            "HEALTH-SQL", "SQL output present", FAIL,
+            "The run completed but there is no usable eplusout.sql, so the results cannot be checked "
+            "(unmet hours, end uses, baseline/proposed comparisons).",
+            model=model.label, clause=CLAUSE_RUN,
+            fixes=["Add Output:SQLite with option SimpleAndTabular to the IDF and run again (OpenStudio and most "
+                   "interfaces have an SQL output switch).",
+                   "Include the .sql file with the .err when you check the run."]))
 
     hours = model.hours_simulated()
     if hours is not None and round(hours) not in (8760, 8784):

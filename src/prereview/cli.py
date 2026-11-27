@@ -10,9 +10,7 @@ from concurrent.futures import ProcessPoolExecutor
 from typing import Dict, List, Optional
 
 from . import __version__
-from .model import ModelRun
-from .rules import run_all
-from .rules.base import FAIL, REVIEW, Context, ProjectInfo
+from .rules.base import FAIL, REVIEW, ProjectInfo
 
 
 def _load_toml(path: str) -> Dict:
@@ -67,27 +65,12 @@ def project_from(path: Optional[str], args: argparse.Namespace) -> ProjectInfo:
 
 def review(proposed: str, baselines: List[str], project: ProjectInfo, out_html: Optional[str],
            out_json: Optional[str], labels: Optional[List[str]] = None) -> int:
+    from .api import review as _review, to_json
     try:
-        p = ModelRun.load(proposed, "proposed", "Proposed")
-        bl = []
-        for i, b in enumerate(baselines):
-            label = labels[i] if labels and i < len(labels) else None
-            bl.append(ModelRun.load(b, "baseline", label or f"Baseline {i + 1}"))
+        ctx, findings = _review(proposed, baselines, project, labels)
     except ValueError as exc:
         print(f"prereview: {exc}", file=sys.stderr)
         return 2
-    # label baselines by rotation when possible
-    for b in bl:
-        if not (labels and b.label in labels) and b.sql is not None:
-            rot = ((b.north_axis() or 0) + (b.appendix_g_rotation() or 0) - (p.north_axis() or 0)) % 360
-            b.label = f"Baseline {rot:.0f}°"
-    seen: Dict[str, int] = {}
-    for b in bl:
-        seen[b.label] = seen.get(b.label, 0) + 1
-        if seen[b.label] > 1:
-            b.label = f"{b.label} ({seen[b.label]})"
-    ctx = Context(p, bl, project)
-    findings = run_all(ctx)
     if out_html:
         from .report.html import render
         os.makedirs(os.path.dirname(os.path.abspath(out_html)), exist_ok=True)
@@ -96,9 +79,7 @@ def review(proposed: str, baselines: List[str], project: ProjectInfo, out_html: 
     if out_json:
         os.makedirs(os.path.dirname(os.path.abspath(out_json)), exist_ok=True)
         with open(out_json, "w", encoding="utf-8") as fh:
-            json.dump({"prereview": __version__, "project": project.__dict__,
-                       "models": [{"label": m.label, "role": m.role, "path": m.path} for m in ctx.models],
-                       "findings": [f.to_dict() for f in findings]}, fh, indent=1, default=str)
+            json.dump(to_json(ctx, findings), fh, indent=1, default=str)
     n_fail = sum(1 for f in findings if f.status == FAIL)
     n_rev = sum(1 for f in findings if f.status == REVIEW)
     for f in sorted(findings, key=lambda f: {"FAIL": 0, "REVIEW": 1}.get(f.status, 2)):

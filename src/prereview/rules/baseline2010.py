@@ -432,7 +432,7 @@ def _climate_zone(ctx: Context) -> Tuple[Optional[str], str, bool]:
         return "warm", basis + ": zone 0–2, Table G3.1.1-3 column for zones 0–3A", False
     if hdd18 > 3000:
         return "cold", basis + ": zone 5–8, Table G3.1.1-3 column for zones 3B, 3C, 4–8", False
-    return None, basis + ": zone 3 or 4 — set climate_zone in project.toml (3A uses the warm column)", False
+    return None, basis + ": zone 3 or 4 — give the climate zone as a project fact (3A uses the warm column)", False
 
 
 def expected_system(edition: str, building_type: str, floors: int, area_ft2: float, heat: str) -> Tuple[int, str]:
@@ -464,14 +464,14 @@ def _system_finding(ctx: Context) -> Finding:
     area_m2 = ctx.proposed.conditioned_area()
     missing = []
     if pj.floors_above_grade is None:
-        missing.append("floors_above_grade")
+        missing.append("the number of floors above grade")
     if heat is None:
-        missing.append("climate_zone" if ctx.edition == "2016" else "heating_source")
+        missing.append("the climate zone" if ctx.edition == "2016" else "the heating source")
     if area_m2 is None:
-        missing.append("conditioned area")
+        missing.append("the conditioned area (from the results)")
     if missing:
         return Finding("BASE-SYSTEM", "Baseline HVAC system type", SKIPPED,
-                       "Needs " + ", ".join(missing) + " (set them in project.toml)." +
+                       "Needs " + " and ".join(missing) + " (project facts: the web form or project.toml)." +
                        (f" {_sentence(basis_txt)}." if basis_txt else ""), clause=clause)
     btype = (pj.building_type or "nonresidential").lower()
     if ctx.edition == "2016" and btype in ("public_assembly", "hospital"):

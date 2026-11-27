@@ -82,6 +82,9 @@ class SqlResults:
         self.path = path
         # read-only URI; as_uri() also handles Windows drive letters, spaces, '#' and '?' in paths
         self.con = sqlite3.connect(Path(os.path.abspath(path)).as_uri() + "?mode=ro", uri=True)
+        # up to 64 MB of page cache: the rules re-read the same tables, and in the browser every page
+        # read from a mounted file is slow
+        self.con.execute("pragma cache_size=-65536")
         self._cache: Dict[str, object] = {}
         self._tables = {
             r[0].lower()

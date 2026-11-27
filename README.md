@@ -5,6 +5,10 @@ ASHRAE 90.1 Appendix G / LEED energy model (one proposed run plus the baseline r
 reviewer is likely to flag. Each finding comes with the numbers behind it, the clause it relates to, the
 zones and objects involved, and what to change.
 
+**Try it in your browser: <https://ray-shi-dev.github.io/tools/eplus-prereview/>.** Drop in the run folders
+you have already simulated. The checker runs inside the browser tab (Python via Pyodide), so model files are
+never uploaded. The command-line version below can also run the simulations for you.
+
 It is built for the checks that cost modelers the most time:
 
 1. **Unmet load hours.** prereview measures the time in which *any* zone is unmet (the 90.1 definition, counted

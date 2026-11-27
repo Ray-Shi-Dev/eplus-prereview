@@ -14,6 +14,7 @@ Clause references are paraphrased.
 | Rule | Checks | FAIL / REVIEW when |
 |---|---|---|
 | HEALTH-RUN | The run finished. The completion signal is the `.err` summary line; EnergyPlus 26 leaves the SQL completion flag FALSE. Crashed runs are detected too. | FAIL: fatal error, crash, or no summary line. The explanation comes from the knowledge base. |
+| HEALTH-SQL | A completed run has a usable eplusout.sql. Without it nothing beyond the `.err` can be checked. | FAIL: completed, but no SQL output (add Output:SQLite, SimpleAndTabular). |
 | HEALTH-YEAR | Weather-file run periods cover 8760/8784 hours | FAIL otherwise (Appendix G requires an annual simulation) |
 | HEALTH-SEVERE | Severe errors in a completed run | FAIL. Each group of messages comes with its meaning and a fix. |
 | HEALTH-WARN | Warnings the knowledge base marks as able to change results (warm-up, psychrometrics, coil freezing, missing setpoints, plant temperature limits, location mismatch) | REVIEW |
