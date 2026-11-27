@@ -95,7 +95,6 @@ def find_energyplus(explicit: Optional[str] = None) -> str:
         "/Applications/EnergyPlus-*/energyplus",
         "C:/EnergyPlusV*/energyplus.exe",
         os.path.expanduser("~/opt/EnergyPlus-*/energyplus"),
-        "/home/claude/opt/EnergyPlus-*/energyplus",
     ]
     for p in patterns:
         candidates.extend(sorted(glob.glob(p), reverse=True))

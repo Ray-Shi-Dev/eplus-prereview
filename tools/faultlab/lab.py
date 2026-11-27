@@ -24,10 +24,10 @@ from faultlab import mutate as M  # noqa: E402
 from faultlab.prepare import prepare  # noqa: E402
 from prereview.idf import Idf, format_object  # noqa: E402
 
-EPW = os.environ.get("LAB_EPW", "/home/claude/data/weather_taipei/TWN_NOR_Taipei.589680_TMYx.epw")
-DDY = os.environ.get("LAB_DDY", "/home/claude/data/weather_taipei/TWN_NOR_Taipei.589680_TMYx.ddy")
-PROTO = os.environ.get("LAB_PROTOTYPES",
-                       "/home/claude/opt/EnergyPlus-26.2.0-4bd7a1f26f-Linux-Ubuntu24.04-x86_64/ExampleFiles")
+EPW = os.environ.get("LAB_EPW", os.path.expanduser("~/data/weather_taipei/TWN_NOR_Taipei.589680_TMYx.epw"))
+DDY = os.environ.get("LAB_DDY", os.path.expanduser("~/data/weather_taipei/TWN_NOR_Taipei.589680_TMYx.ddy"))
+PROTO = os.environ.get("LAB_PROTOTYPES", os.path.expanduser(
+    "~/opt/EnergyPlus-26.2.0-4bd7a1f26f-Linux-Ubuntu24.04-x86_64/ExampleFiles"))
 ALT_EPW = os.environ.get("LAB_ALT_EPW", os.path.join(os.path.dirname(PROTO), "WeatherData",
                                                      "USA_CA_San.Francisco.Intl.AP.724940_TMY3.epw"))
 
